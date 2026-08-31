@@ -257,6 +257,7 @@ public:
         vtol_ = false;
         vtol_mode_ = BridgeMode::kManual;
         vtol_hover_trim_ = 0.0f;
+        vtol_transition_done_ = false;
         vtol_climb_gain_ = 0.08f;
         vtol_trim_gain_ = 0.05f;
         vtol_climb_max_ = 2.5f;
@@ -507,9 +508,21 @@ public:
                 // assist-window guard) expired — TECS then rode its -25 deg
                 // pitch floor chasing its walking speed demand from 18 all
                 // the way into the ground, though the wing flies level there.
+                //
+                // ONE-WAY LATCH: without it the guard re-engages every time
+                // cruise-speed noise dips below the threshold — throttle
+                // floor slams on, speed surges, floor releases, dip... a
+                // limit cycle the operator sees as wobbly forward flight.
+                // Once cruise is first reached, the transition is DONE until
+                // the aircraft re-enters a vertical mode.
+                if (vtol_mode_ == BridgeMode::kQhover || vtol_mode_ == BridgeMode::kQland) {
+                    vtol_transition_done_ = false;
+                } else if (qsim_.airspeed >= plane_.aparm.airspeed_cruise) {
+                    vtol_transition_done_ = true;
+                }
                 const bool transitioning = vtol_mode_ != BridgeMode::kQhover &&
                                            vtol_mode_ != BridgeMode::kQland &&
-                                           qsim_.airspeed < plane_.aparm.airspeed_cruise;
+                                           !vtol_transition_done_;
                 for (int k = 0; k < 8; ++k) {
                     const std::uint32_t sub_now = now_ms_ - 20 + static_cast<std::uint32_t>(((k + 1) * 20) / 8);
                     // ArduPlane-style assisted-transition guard: while the
@@ -957,6 +970,7 @@ private:
     BridgeMode vtol_mode_ = BridgeMode::kManual; // kQhover/kQland when vertical
     float vtol_hover_trim_ = 0.0f; // integral trim around the frame's hover command
     float last_vtol_lift_ = 0.0f;  // collective applied on the most recent sub-step
+    bool vtol_transition_done_ = false; // one-way latch: cruise reached since last vertical mode
     // Per-model VTOL law tuning (apply_model keys; defaults = demo-frame values).
     float vtol_climb_gain_ = 0.08f;
     float vtol_trim_gain_ = 0.05f;
