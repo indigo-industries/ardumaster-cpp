@@ -157,6 +157,13 @@ struct StepPayload {
 };
 static_assert(sizeof(StepPayload) == 10);
 
+// Optional STEP tail appended by hosts that can sample real terrain under the
+// aircraft (WOPR ticket c0faaf38): little-endian float terrain HAE metres +
+// uint8 valid flag. Parsed manually (memcpy at fixed offsets) so StepPayload's
+// 10-byte layout stays byte-stable — an old host omits the tail, an old bridge
+// ignores it, and both keep flying on the flat start-fix ground plane.
+constexpr int kStepTerrainTailLen = 5;
+
 struct ModePayload {
     std::uint8_t mode; // BridgeMode below
 };
@@ -264,6 +271,8 @@ public:
         vtol_land_rate_ = 1.0f;
         vtol_assist_full_ = 8.0f;
         vtol_assist_zero_ = 16.0f;
+        terrain_hae_m_ = 0.0f;
+        terrain_valid_ = false;
 
         // Airframe model, BEFORE any dynamics run. A given-but-broken model
         // is a hard refusal: silently flying the skywalker defaults under a
@@ -471,9 +480,29 @@ public:
         return true;
     }
 
+    // Host-sampled terrain under the aircraft (STEP tail, see
+    // kStepTerrainTailLen). Absolute HAE metres — the same datum as
+    // home.alt — so it writes straight into the base Aircraft ground plane.
+    void set_terrain(float hae_m, bool valid) {
+        terrain_hae_m_ = hae_m;
+        terrain_valid_ = valid;
+    }
+
     Status step(const StepPayload& p) {
         if (!initialized_) {
             return Status::kNotInitialized;
+        }
+        if (terrain_valid_) {
+            // Slide the plant's ground plane to the real surface. hagl(),
+            // on_ground(), and every ground clamp in Aircraft::update_dynamics
+            // key off ground_level, so this one write makes ground contact —
+            // including qland touchdown — terrain-true. Both plants get it:
+            // only one flies, but a VTOL mode handover must agree on the
+            // ground. When the host stops sampling (no resident tiles), the
+            // LAST surface is kept — a stale-but-nearby ground beats snapping
+            // back to the start-fix flat earth mid-flight.
+            sim_.ground_level = terrain_hae_m_;
+            qsim_.ground_level = terrain_hae_m_;
         }
         std::uint16_t n = p.n_steps;
         if (n == 0) {
@@ -971,6 +1000,10 @@ private:
     float vtol_hover_trim_ = 0.0f; // integral trim around the frame's hover command
     float last_vtol_lift_ = 0.0f;  // collective applied on the most recent sub-step
     bool vtol_transition_done_ = false; // one-way latch: cruise reached since last vertical mode
+    // Host-fed real terrain under the aircraft (absolute HAE m). false until
+    // the first STEP tail arrives; the flat start-fix ground applies until then.
+    float terrain_hae_m_ = 0.0f;
+    bool terrain_valid_ = false;
     // Per-model VTOL law tuning (apply_model keys; defaults = demo-frame values).
     float vtol_climb_gain_ = 0.08f;
     float vtol_trim_gain_ = 0.05f;
@@ -1510,6 +1543,13 @@ int main(int argc, char** argv) {
                     if (payload_len >= static_cast<int>(sizeof(StepPayload))) {
                         StepPayload p{};
                         std::memcpy(&p, payload, sizeof(p));
+                        if (payload_len >= static_cast<int>(sizeof(StepPayload)) + kStepTerrainTailLen) {
+                            float terrain_hae = 0.0f;
+                            std::uint8_t terrain_valid = 0;
+                            std::memcpy(&terrain_hae, payload + sizeof(StepPayload), sizeof(terrain_hae));
+                            std::memcpy(&terrain_valid, payload + sizeof(StepPayload) + sizeof(terrain_hae), 1);
+                            bridge.set_terrain(terrain_hae, terrain_valid != 0);
+                        }
                         status = bridge.step(p);
                     }
                     break;
