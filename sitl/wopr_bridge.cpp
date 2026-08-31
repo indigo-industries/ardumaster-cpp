@@ -67,9 +67,13 @@ using socklen_type = socklen_t;
 
 #include <fwcpp/gcs/framing.hpp>
 #include <fwcpp/hal_sitl/sitl_harness.hpp>
+#include <fwcpp/hal_sitl/sitl_quadplane_harness.hpp>
 #include <fwcpp/location.hpp>
 #include <fwcpp/math/scalar.hpp>
+#include <fwcpp/q_modes/mode_qhover.hpp>
+#include <fwcpp/quadplane/quadplane.hpp>
 #include <fwcpp/sim/sim_plane.hpp>
+#include <fwcpp/sim/sim_quadplane.hpp>
 #include <fwcpp/vehicle/mode.hpp>
 #include <fwcpp/vehicle/plane.hpp>
 
@@ -203,6 +207,14 @@ enum class BridgeMode : std::uint8_t {
     kRtl = 5,
     kLoiter = 6,
     kTakeoff = 7,
+    // VTOL models only ("vtol": 1 in the model JSON). QHOVER: the leftover
+    // Quad-X mixer stabilizes attitude while the bridge closes an ArduPlane-
+    // style climb-rate law on the throttle stick (mid = hold). QLAND:
+    // constant-rate descent to ground contact. Any fixed-wing mode on a VTOL
+    // model flies the full Plane stack with lift-motor assist blended out as
+    // airspeed builds (forward transition).
+    kQhover = 8,
+    kQland = 9,
 };
 
 class Bridge {
@@ -214,26 +226,52 @@ public:
         new (&plane_) fwcpp::vehicle::Plane();
         sim_.~SimPlane();
         new (&sim_) fwcpp::sim::SimPlane();
+        qsim_.~SimQuadPlane();
+        new (&qsim_) fwcpp::sim::SimQuadPlane("quadplane");
+        qp_.~QuadPlane();
+        new (&qp_) fwcpp::quadplane::QuadPlane(1);
+        vtol_ = false;
+        vtol_mode_ = BridgeMode::kManual;
+        vtol_hover_trim_ = 0.0f;
 
         // Airframe model, BEFORE any dynamics run. A given-but-broken model
         // is a hard refusal: silently flying the skywalker defaults under a
         // different name is the exact failure this status exists to prevent.
-        if (p.model_json[0] != '\0' && !apply_model(p.model_json)) {
-            initialized_ = false;
-            return Status::kBadModel;
+        // The "vtol" flag is peeked first — it selects which plant every
+        // step below (model application, start fix, warm start) targets.
+        if (p.model_json[0] != '\0') {
+            fwcpp::sim::JsonValue obj;
+            std::string err;
+            if (!fwcpp::sim::load_json_file(p.model_json, obj, err)) {
+                initialized_ = false;
+                return Status::kBadModel;
+            }
+            float vtol_flag = 0.0f;
+            fwcpp::sim::json_get_float(obj, "vtol", vtol_flag);
+            vtol_ = vtol_flag > 0.5f;
+            if (!apply_model(p.model_json)) {
+                initialized_ = false;
+                return Status::kBadModel;
+            }
         }
+
+        fwcpp::sim::SimPlane& plant = active_sim();
 
         fwcpp::Location start;
         start.lat = p.lat_1e7;
         start.lng = p.lng_1e7;
         start.alt = static_cast<std::int32_t>(p.alt_m * 100.0f);
-        sim_.set_start_location(start, p.yaw_deg);
+        plant.set_start_location(start, p.yaw_deg);
 
         // Upstream Plane sets GROUND_BEHAVIOR_FWD_ONLY (SIM_Plane.cpp:50);
         // the port's SimPlane defaults kNone for its own tests. The bridge
         // restores upstream's choice — upright, forward-only ground contact
         // is what makes a takeoff roll clean instead of a physics wrestle.
-        sim_.ground_behavior = fwcpp::sim::GroundBehavior::kFwdOnly;
+        // The QuadPlane plant keeps its own ctor choice (kNoMovement — a
+        // VTOL sits still on its pad instead of creeping forward).
+        if (!vtol_) {
+            sim_.ground_behavior = fwcpp::sim::GroundBehavior::kFwdOnly;
+        }
 
         // Plane-side navigation frame: Location() offset by NED metres from
         // the start point (update_current_loc's own convention). Home IS the
@@ -241,21 +279,31 @@ public:
         plane_.set_home(fwcpp::Location(0, 0, 0, fwcpp::Location::AltFrame::ABSOLUTE));
 
         if (p.in_air != 0) {
-            sim_.position = {p.pos_ned_m[0], p.pos_ned_m[1], p.pos_ned_m[2]};
-            sim_.velocity_ef = {p.vel_ned_mps[0], p.vel_ned_mps[1], p.vel_ned_mps[2]};
-            sim_.dcm.from_euler(p.rpy_rad[0], p.rpy_rad[1], p.rpy_rad[2]);
-            sim_.update_position();
+            plant.position = {p.pos_ned_m[0], p.pos_ned_m[1], p.pos_ned_m[2]};
+            plant.velocity_ef = {p.vel_ned_mps[0], p.vel_ned_mps[1], p.vel_ned_mps[2]};
+            plant.dcm.from_euler(p.rpy_rad[0], p.rpy_rad[1], p.rpy_rad[2]);
+            plant.update_position();
             // Approximate initial airspeed from inertial velocity (no wind
             // at t=0); the plant recomputes it properly on the first step.
-            sim_.airspeed = std::sqrt(sim_.velocity_ef.x * sim_.velocity_ef.x +
-                                      sim_.velocity_ef.y * sim_.velocity_ef.y +
-                                      sim_.velocity_ef.z * sim_.velocity_ef.z);
+            plant.airspeed = std::sqrt(plant.velocity_ef.x * plant.velocity_ef.x +
+                                       plant.velocity_ef.y * plant.velocity_ef.y +
+                                       plant.velocity_ef.z * plant.velocity_ef.z);
         } else {
             // Ground start: the proven sitl_run boot sequence, including the
             // boot-time airspeed zero-offset calibration (only valid while
             // stationary — deliberately skipped for the in-air warm start,
             // where the sensor's default zero offset is already exact).
             plane_.airspeed_sensor.start_calibration(0);
+        }
+
+        if (vtol_) {
+            // VCP-011 boot sequence: QuadPlane subsystems up + QHover armed
+            // state machine entered. The FW side starts FBWA so the surfaces
+            // stabilize once airspeed exists; the lift side stays at zero
+            // collective until the host arms and enters qhover.
+            (void)qp_.setup();
+            qp_.mode_enter();
+            (void)fwcpp::q_modes::qhover_enter();
         }
 
         set_neutral_sticks();
@@ -266,12 +314,20 @@ public:
         return Status::kOk;
     }
 
+    [[nodiscard]] fwcpp::sim::SimPlane& active_sim() {
+        return vtol_ ? static_cast<fwcpp::sim::SimPlane&>(qsim_) : sim_;
+    }
+    [[nodiscard]] const fwcpp::sim::SimPlane& active_sim() const {
+        return vtol_ ? static_cast<const fwcpp::sim::SimPlane&>(qsim_) : sim_;
+    }
+
     // One model file configures BOTH halves of an airframe (see InitPayload's
     // model_json doc): SimPlane::load_coeffs() takes the aero-coefficient
     // subset (upstream's own plane-JSON schema), then the bridge applies the
     // mass/thrust and flight-code envelope keys itself.
     bool apply_model(const char* path) {
-        if (!sim_.load_coeffs(path)) {
+        fwcpp::sim::SimPlane& plant = active_sim();
+        if (!plant.load_coeffs(path)) {
             return false;
         }
         fwcpp::sim::JsonValue obj;
@@ -279,10 +335,10 @@ public:
         if (!fwcpp::sim::load_json_file(path, obj, err)) {
             return false;
         }
-        fwcpp::sim::json_get_float(obj, "mass", sim_.mass);
-        fwcpp::sim::json_get_float(obj, "hover_throttle", sim_.hover_throttle);
-        fwcpp::sim::json_get_vector3(obj, "moment_inertia", sim_.moment_inertia);
-        fwcpp::sim::json_get_float(obj, "ground_friction", sim_.ground_friction);
+        fwcpp::sim::json_get_float(obj, "mass", plant.mass);
+        fwcpp::sim::json_get_float(obj, "hover_throttle", plant.hover_throttle);
+        fwcpp::sim::json_get_vector3(obj, "moment_inertia", plant.moment_inertia);
+        fwcpp::sim::json_get_float(obj, "ground_friction", plant.ground_friction);
         fwcpp::sim::json_get_float(obj, "airspeed_min", plane_.aparm.airspeed_min);
         fwcpp::sim::json_get_float(obj, "airspeed_cruise", plane_.aparm.airspeed_cruise);
         fwcpp::sim::json_get_float(obj, "airspeed_max", plane_.aparm.airspeed_max);
@@ -329,6 +385,26 @@ public:
         }
         for (std::uint16_t i = 0; i < n; ++i) {
             now_ms_ += 20;
+            if (vtol_) {
+                // The QuadPlane loop runs at 400 Hz — eight 2.5 ms sub-steps
+                // inside every 20 ms host tick, sub-tick timestamps spread
+                // evenly so the flight code's ms clock stays monotonic.
+                //
+                // While VERTICAL, hold TECS in reset — FBWA never drives it,
+                // so its demand state is stale the moment a fixed-wing mode
+                // takes over (same mechanism as the fixed-wing takeoff-stage
+                // hold above; measured here as a dive out of hover into
+                // CRUISE that flew the aircraft into the ground).
+                if (vtol_mode_ == BridgeMode::kQhover || vtol_mode_ == BridgeMode::kQland) {
+                    plane_.tecs.reset();
+                }
+                apply_vtol_sticks();
+                for (int k = 0; k < 8; ++k) {
+                    const std::uint32_t sub_now = now_ms_ - 20 + static_cast<std::uint32_t>(((k + 1) * 20) / 8);
+                    qharness_.step(sub_now, 0.0025f, vtol_collective(), plane_.armed);
+                }
+                continue;
+            }
             apply_sticks();
             // Upstream's _initialise_states() continuously RE-SEEDS the TECS
             // height-demand filters during the TAKEOFF flight stage, so AUTO
@@ -366,8 +442,21 @@ public:
         if (!initialized_) {
             return Status::kNotInitialized;
         }
+        const BridgeMode requested = static_cast<BridgeMode>(p.mode);
+        if (requested == BridgeMode::kQhover || requested == BridgeMode::kQland) {
+            if (!vtol_) {
+                return Status::kBadMode; // fixed-wing model has no lift motors
+            }
+            // Vertical flight: the leftover mixer stabilizes attitude and the
+            // bridge's collective law owns height; the FW side flies FBWA so
+            // the surfaces help once airspeed exists.
+            (void)plane_.set_mode(plane_.mode_fbwa);
+            vtol_mode_ = requested;
+            mode_ = requested;
+            return Status::kOk;
+        }
         fwcpp::vehicle::Mode* target = nullptr;
-        switch (static_cast<BridgeMode>(p.mode)) {
+        switch (requested) {
         case BridgeMode::kManual: target = &plane_.mode_manual; break;
         case BridgeMode::kFbwa:   target = &plane_.mode_fbwa; break;
         case BridgeMode::kFbwb:   target = &plane_.mode_fbwb; break;
@@ -379,13 +468,17 @@ public:
         default:
             return Status::kBadMode;
         }
-        const BridgeMode requested = static_cast<BridgeMode>(p.mode);
+        vtol_mode_ = BridgeMode::kManual; // leaving vertical flight (transition assist takes over)
         // FBWB/CRUISE/LOITER: their enter()s never seed target_altitude_cm —
         // "A CALLER MUST CALL set_target_altitude_current" (their own class
         // banners). This bridge is that caller, seeding from sim truth.
         if (requested == BridgeMode::kFbwb || requested == BridgeMode::kCruise ||
             requested == BridgeMode::kLoiter) {
-            plane_.set_target_altitude_current(static_cast<std::int32_t>(-sim_.position.z * 100.0f));
+            // active_sim(), NOT sim_ — on a VTOL model the fixed-wing plant sits
+        // frozen at 0 m, and seeding from it handed CRUISE a 0 m altitude
+        // target out of a 69 m hover (TECS then descended at exactly
+        // sink_max into the ground — measured).
+        plane_.set_target_altitude_current(static_cast<std::int32_t>(-active_sim().position.z * 100.0f));
         }
         if (!plane_.set_mode(*target)) {
             return Status::kModeRefused;
@@ -445,6 +538,9 @@ public:
     // transitions internally (ModeAUTO's mission-complete -> RTL), which made
     // the old label lie to the host exactly when it mattered.
     [[nodiscard]] BridgeMode current_mode() const {
+        if (vtol_ && (vtol_mode_ == BridgeMode::kQhover || vtol_mode_ == BridgeMode::kQland)) {
+            return vtol_mode_;
+        }
         const fwcpp::vehicle::Mode* m = plane_.control_mode;
         if (m == &plane_.mode_fbwa) { return BridgeMode::kFbwa; }
         if (m == &plane_.mode_fbwb) { return BridgeMode::kFbwb; }
@@ -461,7 +557,7 @@ public:
     [[nodiscard]] bool is_initialized() const { return initialized_; }
     [[nodiscard]] bool is_armed() const { return plane_.armed; }
     [[nodiscard]] std::uint32_t sim_time_ms() const { return now_ms_; }
-    [[nodiscard]] const fwcpp::sim::SimPlane& sim() const { return sim_; }
+    [[nodiscard]] const fwcpp::sim::SimPlane& sim() const { return active_sim(); }
     [[nodiscard]] const fwcpp::vehicle::Plane& plane() const { return plane_; }
 
     void gcs_arm(bool armed) {
@@ -483,6 +579,8 @@ public:
         case 11: p.mode = static_cast<std::uint8_t>(BridgeMode::kRtl); break;
         case 12: p.mode = static_cast<std::uint8_t>(BridgeMode::kLoiter); break;
         case 13: p.mode = static_cast<std::uint8_t>(BridgeMode::kTakeoff); break;
+        case 18: p.mode = static_cast<std::uint8_t>(BridgeMode::kQhover); break;
+        case 20: p.mode = static_cast<std::uint8_t>(BridgeMode::kQland); break;
         default:
             return false;
         }
@@ -500,6 +598,8 @@ public:
         case BridgeMode::kRtl: return 11;
         case BridgeMode::kLoiter: return 12;
         case BridgeMode::kTakeoff: return 13;
+        case BridgeMode::kQhover: return 18;
+        case BridgeMode::kQland: return 20;
         }
         return 0;
     }
@@ -525,7 +625,7 @@ public:
         if (!initialized_) {
             return -1;
         }
-        const fwcpp::Location home = sim_.get_home();
+        const fwcpp::Location home = active_sim().get_home();
         const float home_alt_m = static_cast<float>(home.alt) * 0.01f;
         std::array<fwcpp::vehicle::MissionItem, fwcpp::vehicle::kMaxMissionItems> converted{};
         std::size_t count = 0;
@@ -572,27 +672,28 @@ public:
     }
 
     void fill_state(StateReply& r) const {
+        const fwcpp::sim::SimPlane& plant = active_sim();
         r.initialized = initialized_ ? 1 : 0;
         r.mode = static_cast<std::uint8_t>(current_mode());
-        r.on_ground = sim_.on_ground() ? 1 : 0;
-        r.pos_ned_m[0] = sim_.position.x;
-        r.pos_ned_m[1] = sim_.position.y;
-        r.pos_ned_m[2] = sim_.position.z;
-        r.vel_ned_mps[0] = sim_.velocity_ef.x;
-        r.vel_ned_mps[1] = sim_.velocity_ef.y;
-        r.vel_ned_mps[2] = sim_.velocity_ef.z;
+        r.on_ground = plant.on_ground() ? 1 : 0;
+        r.pos_ned_m[0] = plant.position.x;
+        r.pos_ned_m[1] = plant.position.y;
+        r.pos_ned_m[2] = plant.position.z;
+        r.vel_ned_mps[0] = plant.velocity_ef.x;
+        r.vel_ned_mps[1] = plant.velocity_ef.y;
+        r.vel_ned_mps[2] = plant.velocity_ef.z;
         float roll = 0.0f;
         float pitch = 0.0f;
         float yaw = 0.0f;
-        sim_.dcm.to_euler(&roll, &pitch, &yaw);
+        plant.dcm.to_euler(&roll, &pitch, &yaw);
         r.rpy_rad[0] = roll;
         r.rpy_rad[1] = pitch;
         r.rpy_rad[2] = yaw;
-        r.gyro_rps[0] = sim_.gyro.x;
-        r.gyro_rps[1] = sim_.gyro.y;
-        r.gyro_rps[2] = sim_.gyro.z;
-        r.airspeed_mps = sim_.airspeed;
-        r.hagl_m = sim_.hagl();
+        r.gyro_rps[0] = plant.gyro.x;
+        r.gyro_rps[1] = plant.gyro.y;
+        r.gyro_rps[2] = plant.gyro.z;
+        r.airspeed_mps = plant.airspeed;
+        r.hagl_m = plant.hagl();
         r.servo_norm[0] =
             plane_.srv_channels.get_output_scaled(fwcpp::srv::Function::kAileron) / fwcpp::vehicle::kServoMax;
         r.servo_norm[1] =
@@ -621,6 +722,65 @@ private:
         plane_.hal.rc_input.set_channel(fwcpp::vehicle::kChannelThrottle, rc_pwm_[2]);
         plane_.hal.rc_input.set_channel(fwcpp::vehicle::kChannelRudder, rc_pwm_[3]);
         plane_.rc_channels.read_input(plane_.hal.rc_input);
+    }
+
+    // VTOL stick routing: while vertical (qhover/qland) the host's throttle
+    // stick is the CLIMB command (consumed by vtol_collective), not forward
+    // thrust — the plane's own throttle channel is pinned to idle so the FW
+    // servo output can't fight the hover. In fixed-wing modes the sticks
+    // pass through untouched and the lift motors blend out with airspeed.
+    void apply_vtol_sticks() {
+        const bool vertical = vtol_mode_ == BridgeMode::kQhover || vtol_mode_ == BridgeMode::kQland;
+        plane_.hal.rc_input.set_channel(fwcpp::vehicle::kChannelRoll, rc_pwm_[0]);
+        plane_.hal.rc_input.set_channel(fwcpp::vehicle::kChannelPitch, rc_pwm_[1]);
+        plane_.hal.rc_input.set_channel(fwcpp::vehicle::kChannelThrottle,
+                                        vertical ? static_cast<std::uint16_t>(1000) : rc_pwm_[2]);
+        plane_.hal.rc_input.set_channel(fwcpp::vehicle::kChannelRudder, rc_pwm_[3]);
+        plane_.rc_channels.read_input(plane_.hal.rc_input);
+    }
+
+    // Lift-motor collective for this sub-step. QHOVER is ArduPlane's own
+    // semantic: throttle stick mid = hold, deflection = climb-rate demand
+    // (±2.5 m/s), closed with a proportional law on measured climb rate
+    // around the frame's hover command. QLAND is the same law with a fixed
+    // -1 m/s demand until ground contact. Fixed-wing modes get transition
+    // assist: full hover support below ~6 m/s airspeed blending to zero by
+    // 14 m/s, after which the (complete) Plane stack owns the aircraft.
+    [[nodiscard]] float vtol_collective() {
+        const float hover = qsim_.frame().hover_command();
+        const float climb_rate = -qsim_.velocity_ef.z;
+        constexpr float kClimbGain = 0.08f;
+        constexpr float kTrimGain = 0.05f; // slow integrator: kills the steady-state
+                                           // sink a pure-P law leaves when the frame's
+                                           // nominal hover command under-trims (measured
+                                           // -0.5 m/s at mid-stick)
+        constexpr float kSubDt = 0.0025f;
+        if (vtol_mode_ == BridgeMode::kQhover || vtol_mode_ == BridgeMode::kQland) {
+            float climb_dem;
+            if (vtol_mode_ == BridgeMode::kQhover) {
+                const float stick = fwcpp::math::constrain_value(
+                    (static_cast<float>(rc_pwm_[2]) - 1500.0f) / 400.0f, -1.0f, 1.0f);
+                climb_dem = stick * 2.5f;
+            } else {
+                if (qsim_.on_ground()) {
+                    vtol_hover_trim_ = 0.0f;
+                    return 0.0f;
+                }
+                climb_dem = -1.0f;
+            }
+            vtol_hover_trim_ = fwcpp::math::constrain_value(
+                vtol_hover_trim_ + kTrimGain * (climb_dem - climb_rate) * kSubDt, -0.25f, 0.25f);
+            return fwcpp::math::constrain_value(
+                hover + vtol_hover_trim_ + kClimbGain * (climb_dem - climb_rate), 0.0f, 1.0f);
+        }
+        // Forward transition assist: full (trimmed) hover support below 8 m/s
+        // blending to zero by 16 m/s. Cutting at 14 (first attempt) descended
+        // the aircraft into the ground mid-acceleration; reaching to 20
+        // (second attempt) left it permanently ~50% assisted at the foamie's
+        // 12 m/s cruise. Zero-at-16 pairs with a VTOL model cruise >= 16 so
+        // wingborne flight is genuinely wingborne.
+        return (hover + vtol_hover_trim_) *
+               fwcpp::math::constrain_value((16.0f - qsim_.airspeed) / 8.0f, 0.0f, 1.0f);
     }
 
     // Mission::current() returns a pointer into its private fixed array but
@@ -654,6 +814,15 @@ private:
     fwcpp::vehicle::Plane plane_;
     fwcpp::sim::SimPlane sim_;
     fwcpp::hal_sitl::SitlHarness harness_{plane_, sim_};
+    // VTOL variant ("vtol": 1 model flag): QuadPlane subsystems + the
+    // original-source SIM_QuadPlane plant, ticked at 400 Hz by the VCP-011
+    // harness. Only ONE of (harness_, qharness_) runs per session.
+    fwcpp::sim::SimQuadPlane qsim_{"quadplane"};
+    fwcpp::quadplane::QuadPlane qp_{1};
+    fwcpp::hal_sitl::SitlQuadPlaneHarness qharness_{plane_, qp_, qsim_};
+    bool vtol_ = false;
+    BridgeMode vtol_mode_ = BridgeMode::kManual; // kQhover/kQland when vertical
+    float vtol_hover_trim_ = 0.0f; // integral trim around the frame's hover command
     BridgeMode mode_ = BridgeMode::kManual;
     std::uint32_t now_ms_ = 0;
     std::uint16_t rc_pwm_[4] = {1500, 1500, 1100, 1500};
