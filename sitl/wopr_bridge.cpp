@@ -273,6 +273,19 @@ public:
         vtol_assist_zero_ = 16.0f;
         terrain_hae_m_ = 0.0f;
         terrain_valid_ = false;
+        vtol_pos_latched_ = false;
+        vtol_pos_target_n_ = 0.0f;
+        vtol_pos_target_e_ = 0.0f;
+        vtol_pos_dist_ = 0.0f;
+        vtol_land_index_ = -1;
+        vtol_land_n_ = 0.0f;
+        vtol_land_e_ = 0.0f;
+        vtol_pos_kp_ = 0.4f;
+        vtol_vel_kp_ = 1.2f;
+        vtol_vel_max_ = 10.0f;
+        vtol_accel_max_ = 3.0f;
+        vtol_tilt_max_rad_ = 0.35f;
+        vtol_land_capture_m_ = 15.0f;
 
         // Airframe model, BEFORE any dynamics run. A given-but-broken model
         // is a hard refusal: silently flying the skywalker defaults under a
@@ -477,6 +490,15 @@ public:
         fwcpp::sim::json_get_float(obj, "vtol_land_rate_mps", vtol_land_rate_);
         fwcpp::sim::json_get_float(obj, "vtol_assist_full_mps", vtol_assist_full_);
         fwcpp::sim::json_get_float(obj, "vtol_assist_zero_mps", vtol_assist_zero_);
+        fwcpp::sim::json_get_float(obj, "vtol_pos_kp", vtol_pos_kp_);
+        fwcpp::sim::json_get_float(obj, "vtol_vel_kp", vtol_vel_kp_);
+        fwcpp::sim::json_get_float(obj, "vtol_vel_max", vtol_vel_max_);
+        fwcpp::sim::json_get_float(obj, "vtol_accel_max", vtol_accel_max_);
+        float tilt_deg = 0.0f;
+        if (fwcpp::sim::json_get_float(obj, "vtol_tilt_max_deg", tilt_deg) && tilt_deg > 0.0f) {
+            vtol_tilt_max_rad_ = fwcpp::math::radians(tilt_deg);
+        }
+        fwcpp::sim::json_get_float(obj, "vtol_land_capture_m", vtol_land_capture_m_);
         return true;
     }
 
@@ -519,6 +541,23 @@ public:
         for (std::uint16_t i = 0; i < n; ++i) {
             now_ms_ += 20;
             if (vtol_) {
+                // PHASE 3 — mission-driven VTOL landing (ArduPlane VTOL_LAND
+                // analogue): when AUTO advances to a Land item on a VTOL
+                // model, take over with a position-controlled qland AT THE
+                // ITEM'S COORDINATES instead of letting the fixed-wing stack
+                // fly a runway landing the plant cannot roll out of. One-shot:
+                // once engaged, vtol_mode_ holds kQland through touchdown.
+                if (vtol_land_index_ >= 0 && vtol_mode_ != BridgeMode::kQland &&
+                    current_mode() == BridgeMode::kAuto &&
+                    mission_progress_index() == static_cast<std::uint16_t>(vtol_land_index_)) {
+                    (void)plane_.set_mode(plane_.mode_fbwa);
+                    vtol_mode_ = BridgeMode::kQland;
+                    mode_ = BridgeMode::kQland;
+                    vtol_pos_target_n_ = vtol_land_n_;
+                    vtol_pos_target_e_ = vtol_land_e_;
+                    vtol_pos_latched_ = true;
+                    vtol_hover_trim_ = 0.0f;
+                }
                 // The QuadPlane loop runs at 400 Hz — eight 2.5 ms sub-steps
                 // inside every 20 ms host tick, sub-tick timestamps spread
                 // evenly so the flight code's ms clock stays monotonic.
@@ -552,6 +591,12 @@ public:
                 const bool transitioning = vtol_mode_ != BridgeMode::kQhover &&
                                            vtol_mode_ != BridgeMode::kQland &&
                                            !vtol_transition_done_;
+                // Position cascade runs once per host tick (50 Hz) — the
+                // attitude demand it produces holds for the 8 sub-steps.
+                float vtol_roll_dem = 0.0f, vtol_pitch_dem = 0.0f;
+                if (vtol_mode_ == BridgeMode::kQhover || vtol_mode_ == BridgeMode::kQland) {
+                    vtol_position_attitude(vtol_roll_dem, vtol_pitch_dem);
+                }
                 for (int k = 0; k < 8; ++k) {
                     const std::uint32_t sub_now = now_ms_ - 20 + static_cast<std::uint32_t>(((k + 1) * 20) / 8);
                     // ArduPlane-style assisted-transition guard: while the
@@ -574,7 +619,8 @@ public:
                         plane_.tecs.set_throttle_min(0.8f);
                     }
                     last_vtol_lift_ = vtol_collective();
-                    qharness_.step(sub_now, 0.0025f, last_vtol_lift_, plane_.armed);
+                    qharness_.step(sub_now, 0.0025f, last_vtol_lift_, plane_.armed,
+                                   fwcpp::math::Vector3f{}, vtol_roll_dem, vtol_pitch_dem);
                 }
                 continue;
             }
@@ -622,10 +668,13 @@ public:
             }
             // Vertical flight: the leftover mixer stabilizes attitude and the
             // bridge's collective law owns height; the FW side flies FBWA so
-            // the surfaces help once airspeed exists.
+            // the surfaces help once airspeed exists. Position hold latches
+            // at the spot the cascade first runs (phase 3) — an entry with
+            // momentum brakes and returns to it.
             (void)plane_.set_mode(plane_.mode_fbwa);
             vtol_mode_ = requested;
             mode_ = requested;
+            vtol_pos_latched_ = false;
             return Status::kOk;
         }
         fwcpp::vehicle::Mode* target = nullptr;
@@ -668,13 +717,24 @@ public:
             return Status::kBadMission;
         }
         std::array<fwcpp::vehicle::MissionItem, fwcpp::vehicle::kMaxMissionItems> converted{};
+        vtol_land_index_ = -1;
         for (std::uint16_t i = 0; i < count; ++i) {
             const MissionItemWire& w = items[i];
             fwcpp::vehicle::MissionItem& m = converted[i];
             switch (w.cmd) {
             case 0: m.command = fwcpp::vehicle::MissionCommand::Waypoint; break;
             case 1: m.command = fwcpp::vehicle::MissionCommand::Takeoff; break;
-            case 2: m.command = fwcpp::vehicle::MissionCommand::Land; break;
+            case 2:
+                m.command = fwcpp::vehicle::MissionCommand::Land;
+                if (vtol_) {
+                    // Phase 3: a Land item on a VTOL model is flown as a
+                    // position-controlled vertical landing AT these NED
+                    // coordinates — see the AUTO->qland takeover in step().
+                    vtol_land_index_ = static_cast<int>(i);
+                    vtol_land_n_ = w.north_m;
+                    vtol_land_e_ = w.east_m;
+                }
+                break;
             default:
                 return Status::kBadMission;
             }
@@ -917,9 +977,60 @@ private:
     // Lift-motor collective for this sub-step. QHOVER is ArduPlane's own
     // semantic: throttle stick mid = hold, deflection = climb-rate demand
     // (±2.5 m/s), closed with a proportional law on measured climb rate
+    // PHASE 3 — horizontal position cascade for the vertical modes (the
+    // ArduPlane QPOS analogue, bridge-sized): position error -> velocity
+    // demand -> acceleration demand -> attitude demand for the harness
+    // leveler. In qhover, neutral sticks latch the current spot and hold it
+    // (drift-kill); a deflected stick commands attitude directly and
+    // re-latches on release. In qland the target is the latch point (mode
+    // entry, or the mission Land item's coordinates), so touchdown happens
+    // ON the target instead of wherever momentum coasted. Gains/limits are
+    // model keys (vtol_pos_kp / vtol_vel_kp / vtol_vel_max / vtol_accel_max /
+    // vtol_tilt_max_deg).
+    void vtol_position_attitude(float& roll_dem_rad, float& pitch_dem_rad) {
+        roll_dem_rad = 0.0f;
+        pitch_dem_rad = 0.0f;
+        const float rs = (static_cast<float>(rc_pwm_[0]) - 1500.0f) / 500.0f;
+        const float ps = (static_cast<float>(rc_pwm_[1]) - 1500.0f) / 500.0f;
+        if (vtol_mode_ == BridgeMode::kQhover &&
+            (std::fabs(rs) > 0.06f || std::fabs(ps) > 0.06f)) {
+            // Manual translation: stick right = roll right, stick back
+            // (pwm high) = nose up. Position hold re-latches on release.
+            roll_dem_rad = rs * vtol_tilt_max_rad_;
+            pitch_dem_rad = -ps * vtol_tilt_max_rad_;
+            vtol_pos_latched_ = false;
+            return;
+        }
+        if (!vtol_pos_latched_) {
+            vtol_pos_target_n_ = qsim_.position.x;
+            vtol_pos_target_e_ = qsim_.position.y;
+            vtol_pos_latched_ = true;
+        }
+        const float en = vtol_pos_target_n_ - qsim_.position.x;
+        const float ee = vtol_pos_target_e_ - qsim_.position.y;
+        vtol_pos_dist_ = std::sqrt(en * en + ee * ee);
+        const float vn_dem = fwcpp::math::constrain_value(vtol_pos_kp_ * en, -vtol_vel_max_, vtol_vel_max_);
+        const float ve_dem = fwcpp::math::constrain_value(vtol_pos_kp_ * ee, -vtol_vel_max_, vtol_vel_max_);
+        const float an = fwcpp::math::constrain_value(
+            vtol_vel_kp_ * (vn_dem - qsim_.velocity_ef.x), -vtol_accel_max_, vtol_accel_max_);
+        const float ae = fwcpp::math::constrain_value(
+            vtol_vel_kp_ * (ve_dem - qsim_.velocity_ef.y), -vtol_accel_max_, vtol_accel_max_);
+        float r = 0.0f, p = 0.0f, y = 0.0f;
+        qsim_.dcm.to_euler(&r, &p, &y);
+        const float fwd = std::cos(y) * an + std::sin(y) * ae;
+        const float rgt = -std::sin(y) * an + std::cos(y) * ae;
+        constexpr float kG = 9.80665f;
+        pitch_dem_rad = fwcpp::math::constrain_value(-std::atan(fwd / kG), -vtol_tilt_max_rad_, vtol_tilt_max_rad_);
+        roll_dem_rad = fwcpp::math::constrain_value(std::atan(rgt / kG), -vtol_tilt_max_rad_, vtol_tilt_max_rad_);
+    }
+
     // around the frame's hover command. QLAND is the same law with a fixed
     // -vtol_land_rate_ demand (model "vtol_land_rate_mps") until ground
-    // contact. Fixed-wing modes get transition
+    // contact — gated on horizontal capture: while the position cascade is
+    // still more than vtol_land_capture_m_ from its target (e.g. braking
+    // off a 35 m/s mission approach), altitude holds and only the descent
+    // waits, so the aircraft comes down ON the point, not along the way.
+    // Fixed-wing modes get transition
     // assist: full hover support below ~6 m/s airspeed blending to zero by
     // 14 m/s, after which the (complete) Plane stack owns the aircraft.
     [[nodiscard]] float vtol_collective() {
@@ -937,7 +1048,11 @@ private:
                     vtol_hover_trim_ = 0.0f;
                     return 0.0f;
                 }
-                climb_dem = -vtol_land_rate_;
+                // Hold altitude until the position cascade has the target
+                // captured horizontally; then descend on it.
+                climb_dem = (vtol_pos_latched_ && vtol_pos_dist_ > vtol_land_capture_m_)
+                                ? 0.0f
+                                : -vtol_land_rate_;
             }
             // Integral trim kills the steady-state sink a pure-P law leaves
             // when the frame's nominal hover command under-trims (measured
@@ -1019,6 +1134,21 @@ private:
     // the first STEP tail arrives; the flat start-fix ground applies until then.
     float terrain_hae_m_ = 0.0f;
     bool terrain_valid_ = false;
+    // Phase 3: horizontal position hold for the vertical modes.
+    bool vtol_pos_latched_ = false;   // target below is valid; false = latch on next cascade run
+    float vtol_pos_target_n_ = 0.0f;  // NED metres from start
+    float vtol_pos_target_e_ = 0.0f;
+    float vtol_pos_dist_ = 0.0f;      // last horizontal distance to target (m)
+    int vtol_land_index_ = -1;        // mission index of a Land item on a VTOL model, -1 = none
+    float vtol_land_n_ = 0.0f;        // that item's NED coordinates
+    float vtol_land_e_ = 0.0f;
+    // Cascade tuning (model keys, defaults are demo-frame values).
+    float vtol_pos_kp_ = 0.4f;        // (m/s) per m of position error
+    float vtol_vel_kp_ = 1.2f;        // (m/s^2) per m/s of velocity error
+    float vtol_vel_max_ = 10.0f;      // transit/return speed cap
+    float vtol_accel_max_ = 3.0f;     // horizontal accel cap (~17 deg tilt)
+    float vtol_tilt_max_rad_ = 0.35f; // attitude-demand clamp (~20 deg)
+    float vtol_land_capture_m_ = 15.0f; // qland descends only inside this radius
     // Per-model VTOL law tuning (apply_model keys; defaults = demo-frame values).
     float vtol_climb_gain_ = 0.08f;
     float vtol_trim_gain_ = 0.05f;

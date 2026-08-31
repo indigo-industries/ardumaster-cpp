@@ -25,8 +25,15 @@
 
 namespace fwcpp::hal_sitl {
 
+// roll_dem_rad / pitch_dem_rad (WOPR bridge phase 3, 2026-08-31): attitude
+// DEMANDS for the leveler. Default 0 preserves the original behavior exactly
+// (level hover); a caller running a position/velocity cascade above this
+// (e.g. wopr_bridge's qhover position hold / NAV_LAND-at-coords) tilts the
+// frame by demanding non-zero attitude here. The P leveler is unchanged —
+// it just targets the demand instead of zero.
 inline void leftover_apply_vtol_motors(sim::SitlInput& input, const sim::SimQuadPlane& sim, float command,
-                                       bool armed, float dt = 0.0025f) {
+                                       bool armed, float dt = 0.0025f,
+                                       float roll_dem_rad = 0.0f, float pitch_dem_rad = 0.0f) {
     static motors::MotorsMatrix mixer;
     static bool inited = false;
     if (!inited) {
@@ -40,8 +47,8 @@ inline void leftover_apply_vtol_motors(sim::SitlInput& input, const sim::SimQuad
     }
     float roll = 0.0f, pitch = 0.0f, yaw = 0.0f;
     sim.dcm.to_euler(&roll, &pitch, &yaw);
-    const float roll_in = math::constrain_value(-0.5f * roll, -1.0f, 1.0f);
-    const float pitch_in = math::constrain_value(-0.5f * pitch, -1.0f, 1.0f);
+    const float roll_in = math::constrain_value(-0.5f * (roll - roll_dem_rad), -1.0f, 1.0f);
+    const float pitch_in = math::constrain_value(-0.5f * (pitch - pitch_dem_rad), -1.0f, 1.0f);
     const float yaw_in = math::constrain_value(-0.2f * sim.gyro.z, -1.0f, 1.0f);
     bool lr = false, lp = false, ly = false, ll = false, lu = false;
     mixer.output_armed_stabilizing(roll_in, 0.0f, pitch_in, 0.0f, yaw_in, 0.0f, command, command, 0.0f, 1.0f, dt, lr,
@@ -65,8 +72,11 @@ public:
 
     // Sensors from SimQuadPlane (SitlHarness pattern), Plane::tick, QuadPlane
     // update + QHover leftover, then FW+VTOL SitlInput into SIM_QuadPlane.
+    // roll/pitch demands (radians) feed the VTOL leveler — see
+    // leftover_apply_vtol_motors; 0 = level hover (original behavior).
     void step(std::uint32_t now_ms, float dt, float vtol_command, bool vtol_armed,
-              const math::Vector3f& gyro_bias = math::Vector3f{}) {
+              const math::Vector3f& gyro_bias = math::Vector3f{},
+              float vtol_roll_dem_rad = 0.0f, float vtol_pitch_dem_rad = 0.0f) {
         vehicle::StabilizeInputs in;
         in.dt = dt;
         in.now_ms = now_ms;
@@ -125,7 +135,8 @@ public:
         input.servos[1] = static_cast<std::uint16_t>(math::constrain_value(1500.0f + elevator * 500.0f, 1000.0f, 2000.0f));
         input.servos[2] = static_cast<std::uint16_t>(math::constrain_value(1000.0f + throttle * 1000.0f, 1000.0f, 2000.0f));
         input.servos[3] = static_cast<std::uint16_t>(math::constrain_value(1500.0f + rudder * 500.0f, 1000.0f, 2000.0f));
-        leftover_apply_vtol_motors(input, sim_, vtol_command, vtol_armed && last_motors_.action == quadplane::MotorsOutputAction::kOutput, dt);
+        leftover_apply_vtol_motors(input, sim_, vtol_command, vtol_armed && last_motors_.action == quadplane::MotorsOutputAction::kOutput, dt,
+                                   vtol_roll_dem_rad, vtol_pitch_dem_rad);
         last_input_ = input;
         sim_.update(input, dt);
         ++tick_count_;
