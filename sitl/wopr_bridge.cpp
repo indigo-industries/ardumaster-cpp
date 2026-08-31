@@ -918,7 +918,8 @@ private:
     // semantic: throttle stick mid = hold, deflection = climb-rate demand
     // (±2.5 m/s), closed with a proportional law on measured climb rate
     // around the frame's hover command. QLAND is the same law with a fixed
-    // -1 m/s demand until ground contact. Fixed-wing modes get transition
+    // -vtol_land_rate_ demand (model "vtol_land_rate_mps") until ground
+    // contact. Fixed-wing modes get transition
     // assist: full hover support below ~6 m/s airspeed blending to zero by
     // 14 m/s, after which the (complete) Plane stack owns the aircraft.
     [[nodiscard]] float vtol_collective() {
@@ -941,10 +942,24 @@ private:
             // Integral trim kills the steady-state sink a pure-P law leaves
             // when the frame's nominal hover command under-trims (measured
             // -0.5 m/s at mid-stick on the demo frame).
-            vtol_hover_trim_ = fwcpp::math::constrain_value(
-                vtol_hover_trim_ + vtol_trim_gain_ * (climb_dem - climb_rate) * kSubDt, -0.25f, 0.25f);
-            return fwcpp::math::constrain_value(
-                hover + vtol_hover_trim_ + vtol_climb_gain_ * (climb_dem - climb_rate), 0.0f, 1.0f);
+            //
+            // The trim spans the FULL collective range (bench-measured
+            // 2026-08-31): the old +/-0.25 clamp saturated in sustained rate
+            // tracking on both sides — qland converged at -1.7 of a -2.0
+            // demand then decayed to -1.4 as rotor inflow added thrust in
+            // descent, and full-stick climb pinned at +5.8 of +6.0. Windup is
+            // handled the classic way instead: don't integrate further in the
+            // direction of an already-saturated output.
+            const float err = climb_dem - climb_rate;
+            const float p_term = vtol_climb_gain_ * err;
+            const float unsat = hover + vtol_hover_trim_ + p_term;
+            const bool wound_low = unsat <= 0.0f && err < 0.0f;
+            const bool wound_high = unsat >= 1.0f && err > 0.0f;
+            if (!wound_low && !wound_high) {
+                vtol_hover_trim_ = fwcpp::math::constrain_value(
+                    vtol_hover_trim_ + vtol_trim_gain_ * err * kSubDt, -hover, 1.0f - hover);
+            }
+            return fwcpp::math::constrain_value(hover + vtol_hover_trim_ + p_term, 0.0f, 1.0f);
         }
         // Forward transition assist: full (trimmed) hover support up to
         // vtol_assist_full_mps, blending to zero by vtol_assist_zero_mps —
