@@ -86,6 +86,26 @@ using sock_type = int;
 namespace {
 
 constexpr std::uint32_t kMagic = 0x57534231; // 'WSB1'
+
+// sim_json has no string getter (its frame/coeff schemas are all numeric);
+// the bridge's model schema carries two string keys, read with the same
+// JsonValue idiom json_get_float uses.
+inline bool json_get_string(const fwcpp::sim::JsonValue& obj, const char* key, std::string& dest) {
+    const fwcpp::sim::JsonValue* v = obj.get(key);
+    if (v == nullptr || v->type != fwcpp::sim::JsonValue::Type::kString) {
+        return false;
+    }
+    dest = v->str;
+    return true;
+}
+
+// Directory of a path (both separators), WITH the trailing separator; empty
+// when the path has none.
+inline std::string path_dirname(const char* path) {
+    const std::string p(path);
+    const std::size_t cut = p.find_last_of("/\\");
+    return (cut == std::string::npos) ? std::string() : p.substr(0, cut + 1);
+}
 constexpr float kDt = 0.02f;                 // this port's established Plane tick rate (50Hz)
 constexpr std::uint16_t kDefaultPort = 9101;
 constexpr std::uint16_t kMaxStepsPerRequest = 64; // 1.28 sim-seconds; caps a host dt spiral
@@ -188,6 +208,9 @@ struct StateReply {
     float hagl_m;
     float servo_norm[4]; // aileron/elevator/rudder in [-1,1]; throttle in [0,1]
     float vtol_lift;     // lift-motor collective actually applied [0,1]; 0 on fixed-wing sessions
+    float vtol_hover_cmd; // the frame's own hover collective (Frame::hover_command());
+                          // 0 on fixed-wing sessions. The host normalizes lift
+                          // against THIS, never a hard-coded constant.
     std::uint16_t mission_index;
     std::uint16_t mission_count;
     std::uint32_t sim_time_ms;
@@ -195,7 +218,7 @@ struct StateReply {
     std::uint8_t initialized;
     std::uint8_t pad[2];
 };
-static_assert(sizeof(StateReply) == 100);
+static_assert(sizeof(StateReply) == 104);
 #pragma pack(pop)
 
 // Host-facing mode ids. Names, not plane.hpp internals, are the contract.
@@ -234,6 +257,12 @@ public:
         vtol_ = false;
         vtol_mode_ = BridgeMode::kManual;
         vtol_hover_trim_ = 0.0f;
+        vtol_climb_gain_ = 0.08f;
+        vtol_trim_gain_ = 0.05f;
+        vtol_climb_max_ = 2.5f;
+        vtol_land_rate_ = 1.0f;
+        vtol_assist_full_ = 8.0f;
+        vtol_assist_zero_ = 16.0f;
 
         // Airframe model, BEFORE any dynamics run. A given-but-broken model
         // is a hard refusal: silently flying the skywalker defaults under a
@@ -250,7 +279,73 @@ public:
             float vtol_flag = 0.0f;
             fwcpp::sim::json_get_float(obj, "vtol", vtol_flag);
             vtol_ = vtol_flag > 0.5f;
+
+            if (vtol_) {
+                // SINGLE-AUTHORITY GUARD: on a VTOL session SimQuadPlane
+                // re-reads mass from the FRAME every tick and applies the
+                // frame's own moment_of_inertia, so these bridge keys would
+                // be silently dead. Refuse rather than let a model author
+                // believe they took effect.
+                float dummy = 0.0f;
+                fwcpp::math::Vector3f vdummy;
+                if (fwcpp::sim::json_get_float(obj, "mass", dummy) ||
+                    fwcpp::sim::json_get_vector3(obj, "moment_inertia", vdummy)) {
+                    std::printf("model rejected: on a vtol model, mass/moment_inertia belong in the "
+                                "FRAME file (vtol_frame_params), not the model json\n");
+                    std::fflush(stdout);
+                    initialized_ = false;
+                    return Status::kBadModel;
+                }
+
+                // Frame selection: layout string (motor arrangement) plus an
+                // optional physical-parameters file, resolved relative to the
+                // model json itself. Composed into Frame::init's own
+                // "<layout>:<file>.json" convention.
+                std::string layout = "quadplane";
+                std::string frame_params;
+                json_get_string(obj, "vtol_frame_layout", layout);
+                std::string frame_str = layout;
+                if (json_get_string(obj, "vtol_frame_params", frame_params) && !frame_params.empty()) {
+                    const bool absolute = frame_params.find(':') != std::string::npos ||
+                                          frame_params.front() == '/' || frame_params.front() == '\\';
+                    const std::string full =
+                        absolute ? frame_params : path_dirname(p.model_json) + frame_params;
+                    // Verify the frame file loads NOW — Frame::init's own
+                    // load_frame_params failure is silent (defaults kept),
+                    // which is exactly the silent-skywalker trap this status
+                    // exists to prevent.
+                    fwcpp::sim::JsonValue fobj;
+                    if (!fwcpp::sim::load_json_file(full.c_str(), fobj, err)) {
+                        std::printf("model rejected: vtol_frame_params '%s' unreadable (%s)\n",
+                                    full.c_str(), err.c_str());
+                        std::fflush(stdout);
+                        initialized_ = false;
+                        return Status::kBadModel;
+                    }
+                    frame_str += ":" + full;
+                }
+                qsim_.~SimQuadPlane();
+                new (&qsim_) fwcpp::sim::SimQuadPlane(frame_str.c_str());
+                std::printf("vtol frame: '%s' -> %s, %d lift motors, hover_command=%.3f, mass=%.1f kg\n",
+                            frame_str.c_str(), qsim_.frame().name,
+                            static_cast<int>(qsim_.frame().num_motors),
+                            qsim_.frame().hover_command(), qsim_.mass);
+                std::fflush(stdout);
+            }
+
             if (!apply_model(p.model_json)) {
+                initialized_ = false;
+                return Status::kBadModel;
+            }
+
+            if (vtol_ && !(vtol_assist_zero_ > vtol_assist_full_ &&
+                           vtol_assist_zero_ <= plane_.aparm.airspeed_cruise &&
+                           vtol_climb_max_ > 0.0f && vtol_land_rate_ > 0.0f)) {
+                std::printf("model rejected: vtol law keys inconsistent (assist %g..%g vs cruise %g, "
+                            "climb_max %g, land_rate %g)\n",
+                            vtol_assist_full_, vtol_assist_zero_, plane_.aparm.airspeed_cruise,
+                            vtol_climb_max_, vtol_land_rate_);
+                std::fflush(stdout);
                 initialized_ = false;
                 return Status::kBadModel;
             }
@@ -365,6 +460,13 @@ public:
         fwcpp::sim::json_get_float(obj, "tecs_thr_damp", tg.thr_damp);
         fwcpp::sim::json_get_float(obj, "tecs_ptch_damp", tg.ptch_damp);
         fwcpp::sim::json_get_float(obj, "tecs_integ_gain", tg.integ_gain);
+        // VTOL law tuning (vtol models only; harmless no-ops otherwise).
+        fwcpp::sim::json_get_float(obj, "vtol_climb_gain", vtol_climb_gain_);
+        fwcpp::sim::json_get_float(obj, "vtol_trim_gain", vtol_trim_gain_);
+        fwcpp::sim::json_get_float(obj, "vtol_climb_max", vtol_climb_max_);
+        fwcpp::sim::json_get_float(obj, "vtol_land_rate_mps", vtol_land_rate_);
+        fwcpp::sim::json_get_float(obj, "vtol_assist_full_mps", vtol_assist_full_);
+        fwcpp::sim::json_get_float(obj, "vtol_assist_zero_mps", vtol_assist_zero_);
         return true;
     }
 
@@ -400,8 +502,35 @@ public:
                     plane_.tecs.reset();
                 }
                 apply_vtol_sticks();
+                // Guard window runs to CRUISE speed, not just assist-zero:
+                // the measured dive began the exact tick assist (and an
+                // assist-window guard) expired — TECS then rode its -25 deg
+                // pitch floor chasing its walking speed demand from 18 all
+                // the way into the ground, though the wing flies level there.
+                const bool transitioning = vtol_mode_ != BridgeMode::kQhover &&
+                                           vtol_mode_ != BridgeMode::kQland &&
+                                           qsim_.airspeed < plane_.aparm.airspeed_cruise;
                 for (int k = 0; k < 8; ++k) {
                     const std::uint32_t sub_now = now_ms_ - 20 + static_cast<std::uint32_t>(((k + 1) * 20) / 8);
+                    // ArduPlane-style assisted-transition guard: while the
+                    // lift motors are carrying the aircraft through the
+                    // sub-stall corridor, TECS must not trade altitude for
+                    // airspeed — its underspeed logic otherwise pitches down
+                    // at up to sink_max and dives a 95 m hover into the
+                    // ground (measured twice). External limits reset every
+                    // TECS iteration, so re-assert per sub-step.
+                    if (transitioning) {
+                        plane_.tecs.set_pitch_min(-2.0f);
+                        // Break the underspeed deadlock: TECS's underspeed
+                        // state pins the speed demand to airspeed_min and
+                        // flies speed with pitch, so the aircraft equilibrates
+                        // just BELOW the underspeed-exit hysteresis and stays
+                        // there forever (measured: 100 s pinned at min+1).
+                        // A high throttle floor pushes airspeed through the
+                        // exit threshold; past cruise the guard drops and
+                        // TECS manages normally.
+                        plane_.tecs.set_throttle_min(0.8f);
+                    }
                     last_vtol_lift_ = vtol_collective();
                     qharness_.step(sub_now, 0.0025f, last_vtol_lift_, plane_.armed);
                 }
@@ -704,6 +833,7 @@ public:
             plane_.srv_channels.get_output_scaled(fwcpp::srv::Function::kRudder) / fwcpp::vehicle::kServoMax;
         r.servo_norm[3] = plane_.srv_channels.get_output_scaled(fwcpp::srv::Function::kThrottle) / 100.0f;
         r.vtol_lift = vtol_ ? last_vtol_lift_ : 0.0f;
+        r.vtol_hover_cmd = vtol_ ? qsim_.frame().hover_command() : 0.0f;
         r.mission_count = static_cast<std::uint16_t>(plane_.mission.size());
         r.mission_index = mission_progress_index();
         r.sim_time_ms = now_ms_;
@@ -752,38 +882,38 @@ private:
     [[nodiscard]] float vtol_collective() {
         const float hover = qsim_.frame().hover_command();
         const float climb_rate = -qsim_.velocity_ef.z;
-        constexpr float kClimbGain = 0.08f;
-        constexpr float kTrimGain = 0.05f; // slow integrator: kills the steady-state
-                                           // sink a pure-P law leaves when the frame's
-                                           // nominal hover command under-trims (measured
-                                           // -0.5 m/s at mid-stick)
         constexpr float kSubDt = 0.0025f;
         if (vtol_mode_ == BridgeMode::kQhover || vtol_mode_ == BridgeMode::kQland) {
             float climb_dem;
             if (vtol_mode_ == BridgeMode::kQhover) {
                 const float stick = fwcpp::math::constrain_value(
                     (static_cast<float>(rc_pwm_[2]) - 1500.0f) / 400.0f, -1.0f, 1.0f);
-                climb_dem = stick * 2.5f;
+                climb_dem = stick * vtol_climb_max_;
             } else {
                 if (qsim_.on_ground()) {
                     vtol_hover_trim_ = 0.0f;
                     return 0.0f;
                 }
-                climb_dem = -1.0f;
+                climb_dem = -vtol_land_rate_;
             }
+            // Integral trim kills the steady-state sink a pure-P law leaves
+            // when the frame's nominal hover command under-trims (measured
+            // -0.5 m/s at mid-stick on the demo frame).
             vtol_hover_trim_ = fwcpp::math::constrain_value(
-                vtol_hover_trim_ + kTrimGain * (climb_dem - climb_rate) * kSubDt, -0.25f, 0.25f);
+                vtol_hover_trim_ + vtol_trim_gain_ * (climb_dem - climb_rate) * kSubDt, -0.25f, 0.25f);
             return fwcpp::math::constrain_value(
-                hover + vtol_hover_trim_ + kClimbGain * (climb_dem - climb_rate), 0.0f, 1.0f);
+                hover + vtol_hover_trim_ + vtol_climb_gain_ * (climb_dem - climb_rate), 0.0f, 1.0f);
         }
-        // Forward transition assist: full (trimmed) hover support below 8 m/s
-        // blending to zero by 16 m/s. Cutting at 14 (first attempt) descended
-        // the aircraft into the ground mid-acceleration; reaching to 20
-        // (second attempt) left it permanently ~50% assisted at the foamie's
-        // 12 m/s cruise. Zero-at-16 pairs with a VTOL model cruise >= 16 so
-        // wingborne flight is genuinely wingborne.
+        // Forward transition assist: full (trimmed) hover support up to
+        // vtol_assist_full_mps, blending to zero by vtol_assist_zero_mps —
+        // which model validation pins at/below the wing's cruise so wingborne
+        // flight is genuinely wingborne. (History on the demo frame: cutting
+        // at 14 descended it into the ground mid-acceleration; reaching to 20
+        // left it permanently half-assisted at the foamie's 12 m/s cruise.)
         return (hover + vtol_hover_trim_) *
-               fwcpp::math::constrain_value((16.0f - qsim_.airspeed) / 8.0f, 0.0f, 1.0f);
+               fwcpp::math::constrain_value(
+                   (vtol_assist_zero_ - qsim_.airspeed) / (vtol_assist_zero_ - vtol_assist_full_),
+                   0.0f, 1.0f);
     }
 
     // Mission::current() returns a pointer into its private fixed array but
@@ -827,6 +957,13 @@ private:
     BridgeMode vtol_mode_ = BridgeMode::kManual; // kQhover/kQland when vertical
     float vtol_hover_trim_ = 0.0f; // integral trim around the frame's hover command
     float last_vtol_lift_ = 0.0f;  // collective applied on the most recent sub-step
+    // Per-model VTOL law tuning (apply_model keys; defaults = demo-frame values).
+    float vtol_climb_gain_ = 0.08f;
+    float vtol_trim_gain_ = 0.05f;
+    float vtol_climb_max_ = 2.5f;      // m/s at full stick in qhover
+    float vtol_land_rate_ = 1.0f;      // m/s qland descent
+    float vtol_assist_full_ = 8.0f;    // full lift assist below this airspeed
+    float vtol_assist_zero_ = 16.0f;   // assist reaches zero here (<= cruise, validated)
     BridgeMode mode_ = BridgeMode::kManual;
     std::uint32_t now_ms_ = 0;
     std::uint16_t rc_pwm_[4] = {1500, 1500, 1100, 1500};
