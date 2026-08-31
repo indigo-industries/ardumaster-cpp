@@ -159,4 +159,183 @@ public:
     std::uint16_t output_pwm() const { return static_cast<std::uint16_t>(1000 + 1000 * rotor_ramp); }
 };
 
+enum class HeliTailType : std::uint8_t {
+    SERVO = 0,
+    SERVO_EXTGYRO = 1,
+    DDVP = 2,
+    DDFP_CW = 3,
+    DDFP_CCW = 4,
+};
+enum class HeliDualMode : std::uint8_t { TANDEM = 0, TRANSVERSE = 1, INTERMESHING = 2 };
+
+class MotorsHeliSingle {
+public:
+    MotorsHeliSwash swash;
+    MotorsHeliRSC rsc;
+    MotorsHeliRSC tail_rsc;
+    HeliTailType tail_type = HeliTailType::SERVO;
+    bool flybar_mode = false;
+    float cyclic_max = 4500;
+    float collective_min = 1250;
+    float collective_max = 1750;
+    float collective_land_min = 0;
+    float collective_zero_thrust_pct = 0.5f;
+    float collective_yaw_scale = 0;
+    float yaw_trim = 0;
+    float ext_gyro_gain_std = 350;
+    float ext_gyro_gain_acro = 0;
+    float ddvp_tailspeed = 1.0f;
+    float servo4_out = 0;
+    bool acro_tail = false;
+    bool rotor_active = true;
+
+    void configure() { swash.configure(); }
+
+    void move_actuators(float roll_out, float pitch_out, float coll_in, float yaw_in) {
+        // cyclic scaler: original divides by cyclic_max/4500
+        const float scaler = cyclic_max > 0 ? 4500.0f / cyclic_max : 1.0f;
+        float roll = math::constrain_value(roll_out * scaler, -1.0f, 1.0f);
+        float pitch = math::constrain_value(pitch_out * scaler, -1.0f, 1.0f);
+        float collective = math::constrain_value(coll_in, 0.0f, 1.0f);
+        if (!rotor_active) {
+            collective = std::max(collective, collective_land_min);
+        }
+        float yaw_offset = 0;
+        if (tail_type != HeliTailType::SERVO_EXTGYRO && rotor_active) {
+            yaw_offset = collective_yaw_scale * std::pow(std::fabs(collective - collective_zero_thrust_pct), 1.5f);
+            if (tail_type == HeliTailType::DDFP_CW || tail_type == HeliTailType::DDFP_CCW) {
+                yaw_offset += yaw_trim;
+            }
+        }
+        const float collective_scalar = (collective_max - collective_min) * 0.001f;
+        const float collective_out_scaled = collective * collective_scalar + (collective_min - 1000.0f) * 0.001f;
+        swash.calculate(roll, pitch, collective_out_scaled);
+        servo4_out = math::constrain_value(yaw_in + yaw_offset, -1.0f, 1.0f);
+        rsc.set_desired_rotor_speed(rotor_active ? 1.0f : 0.0f);
+        if (tail_type == HeliTailType::DDVP) {
+            tail_rsc.set_desired_rotor_speed(rotor_active ? ddvp_tailspeed : 0.0f);
+        }
+    }
+
+    void write_servos(std::uint16_t* servos, float dt = 0.01f) {
+        rsc.update_rotor_ramp(dt);
+        tail_rsc.update_rotor_ramp(dt);
+        swash.write_servos(servos, rsc.output_pwm());
+        float yaw = servo4_out;
+        if (tail_type == HeliTailType::DDFP_CCW) {
+            yaw = -yaw;
+        }
+        if (tail_type == HeliTailType::DDFP_CW || tail_type == HeliTailType::DDFP_CCW) {
+            servos[3] = static_cast<std::uint16_t>(1000 + 1000 * math::constrain_value(yaw, 0.0f, 1.0f));
+        } else {
+            servos[3] = static_cast<std::uint16_t>(1500 + 500 * yaw);
+        }
+        if (tail_type == HeliTailType::SERVO_EXTGYRO) {
+            const float gain = (acro_tail && ext_gyro_gain_acro > 0) ? ext_gyro_gain_acro : ext_gyro_gain_std;
+            servos[6] = static_cast<std::uint16_t>(1000 + gain);
+        }
+        if (tail_type == HeliTailType::DDVP) {
+            servos[7] = rsc.output_pwm();
+            servos[8] = tail_rsc.output_pwm();
+        }
+    }
+};
+
+class MotorsHeliDual {
+public:
+    MotorsHeliSwash swash1;
+    MotorsHeliSwash swash2;
+    MotorsHeliRSC rsc;
+    HeliDualMode dual_mode = HeliDualMode::TANDEM;
+    float dcp_scaler = 0.25f;
+    float yaw_scaler = 1.0f;
+    float collective_min = 1250;
+    float collective_max = 1750;
+
+    void configure() {
+        swash1.configure();
+        swash2.configure();
+    }
+    void mix_tandem(float roll, float pitch, float yaw, float coll, float& r1, float& p1, float& r2, float& p2) {
+        r1 = roll - yaw * yaw_scaler;
+        r2 = roll + yaw * yaw_scaler;
+        p1 = pitch + roll * dcp_scaler;
+        p2 = pitch - roll * dcp_scaler;
+        (void)coll;
+    }
+    void mix_transverse(float roll, float pitch, float yaw, float coll, float& r1, float& p1, float& r2, float& p2) {
+        p1 = pitch + yaw * yaw_scaler;
+        p2 = pitch - yaw * yaw_scaler;
+        r1 = roll + pitch * dcp_scaler;
+        r2 = roll - pitch * dcp_scaler;
+        (void)coll;
+    }
+    void mix_intermeshing(float roll, float pitch, float yaw, float coll, float& r1, float& p1, float& r2, float& p2) {
+        p1 = pitch + yaw * yaw_scaler;
+        p2 = pitch - yaw * yaw_scaler;
+        r1 = roll;
+        r2 = -roll;
+        (void)coll;
+    }
+    void move_actuators(float roll, float pitch, float coll, float yaw) {
+        const float collective_scalar = (collective_max - collective_min) * 0.001f;
+        const float coll_scaled = math::constrain_value(coll, 0.0f, 1.0f) * collective_scalar + (collective_min - 1000.0f) * 0.001f;
+        float r1, p1, r2, p2;
+        if (dual_mode == HeliDualMode::TANDEM) {
+            mix_tandem(roll, pitch, yaw, coll, r1, p1, r2, p2);
+        } else if (dual_mode == HeliDualMode::TRANSVERSE) {
+            mix_transverse(roll, pitch, yaw, coll, r1, p1, r2, p2);
+        } else {
+            mix_intermeshing(roll, pitch, yaw, coll, r1, p1, r2, p2);
+        }
+        swash1.calculate(r1, p1, coll_scaled);
+        swash2.calculate(r2, p2, coll_scaled);
+        rsc.set_desired_rotor_speed(1.0f);
+    }
+    void write_servos(std::uint16_t* servos, float dt = 0.01f) {
+        rsc.update_rotor_ramp(dt);
+        for (std::uint8_t i = 0; i < MotorsHeliSwash::kMaxServos; i++) {
+            if (swash1._enabled[i]) {
+                servos[i] = MotorsHeliSwash::rc_write_pwm(swash1._output[i]);
+            }
+            if (swash2._enabled[i]) {
+                servos[3 + i] = MotorsHeliSwash::rc_write_pwm(swash2._output[i]);
+            }
+        }
+        servos[7] = rsc.output_pwm();
+    }
+};
+
+class MotorsHeliQuad {
+public:
+    MotorsHeliRSC rsc;
+    float collective_min = 1250;
+    float collective_max = 1750;
+    float out[4]{};
+    void move_actuators(float roll, float pitch, float coll, float yaw) {
+        const float collective_scalar = (collective_max - collective_min) * 0.001f;
+        const float coll_scaled = math::constrain_value(coll, 0.0f, 1.0f) * collective_scalar + (collective_min - 1000.0f) * 0.001f;
+        static constexpr float angles[4] = {45, 225, 315, 135};
+        static constexpr bool clockwise[4] = {false, false, true, true};
+        const float c45 = std::cos(math::radians(45.0f));
+        for (int i = 0; i < 4; i++) {
+            const float r = -0.25f * std::sin(math::radians(angles[i])) / c45 * roll;
+            const float p = 0.25f * std::cos(math::radians(angles[i])) / c45 * pitch;
+            float y = 0.25f * yaw;
+            if (clockwise[i]) {
+                y = -y;
+            }
+            out[i] = r + p + y + coll_scaled;
+        }
+        rsc.set_desired_rotor_speed(1.0f);
+    }
+    void write_servos(std::uint16_t* servos, float dt = 0.01f) {
+        rsc.update_rotor_ramp(dt);
+        for (int i = 0; i < 4; i++) {
+            servos[i] = MotorsHeliSwash::rc_write_pwm(2.0f * out[i] - 1.0f);
+        }
+        servos[7] = rsc.output_pwm();
+    }
+};
+
 }  // namespace fwcpp::motors

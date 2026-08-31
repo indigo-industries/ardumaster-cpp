@@ -35,6 +35,15 @@ public:
 
     [[nodiscard]] std::size_t available() const { return buf_.size(); }
     [[nodiscard]] std::size_t space() const { return cap_ - buf_.size(); }
+    [[nodiscard]] std::size_t get_size() const { return cap_; }
+    bool read_byte(std::uint8_t* b) {
+        if (buf_.empty() || b == nullptr) {
+            return false;
+        }
+        *b = buf_.front();
+        buf_.pop_front();
+        return true;
+    }
     void clear() { buf_.clear(); }
 
 private:

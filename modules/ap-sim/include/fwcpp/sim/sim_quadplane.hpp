@@ -86,6 +86,11 @@ public:
     [[nodiscard]] Frame& frame() { return frame_; }
     [[nodiscard]] const Frame& frame() const { return frame_; }
 
+    // VCP-012: test-only accessor exposing the tailsitter frame-string flag
+    // (real upstream `copter_tailsitter`, SIM_QuadPlane.cpp line 82) so tests
+    // can assert the frame-string parser alone, independent of flight dynamics.
+    [[nodiscard]] bool copter_tailsitter() const { return copter_tailsitter_; }
+
     void update(const SitlInput& input, float dt) {
         mass = frame_.get_mass();
         update_wind_from_input(input);

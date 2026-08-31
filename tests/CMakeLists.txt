@@ -208,11 +208,30 @@ catch_discover_tests(ahrs_leftover_test)
 
 add_executable(sim_plane_test sim_plane_test.cpp)
 target_link_libraries(sim_plane_test PRIVATE ap-sim Catch2::Catch2WithMain)
+# CPP-094: absolute path to this test's real, byte-for-byte upstream fixture
+# (tests/fixtures/skywalker_2013.json) - no established fixture-path
+# convention existed anywhere else in this tree to reuse, so this
+# CMAKE_CURRENT_SOURCE_DIR-derived compile definition is the new one;
+# an absolute path avoids any dependence on ctest's/the test binary's
+# working directory.
+target_compile_definitions(sim_plane_test PRIVATE
+    FWCPP_SIM_PLANE_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 catch_discover_tests(sim_plane_test)
 
 add_executable(sim_multicopter_test sim_multicopter_test.cpp)
 target_link_libraries(sim_multicopter_test PRIVATE ap-sim Catch2::Catch2WithMain)
 catch_discover_tests(sim_multicopter_test)
+
+# CCP-067: Frame::load_frame_params() round-trip tests against real upstream
+# Callisto.json/freestyle.json fixtures - same fixture-path convention
+# CPP-094 established for sim_plane_test above (an absolute,
+# CMAKE_CURRENT_SOURCE_DIR-derived compile definition, so the test binary
+# does not depend on ctest's/the binary's own working directory).
+add_executable(sim_frame_test sim_frame_test.cpp)
+target_link_libraries(sim_frame_test PRIVATE ap-sim Catch2::Catch2WithMain)
+target_compile_definitions(sim_frame_test PRIVATE
+    FWCPP_SIM_FRAME_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+catch_discover_tests(sim_frame_test)
 
 add_executable(sim_leftover_test sim_leftover_test.cpp)
 target_link_libraries(sim_leftover_test PRIVATE ap-sim Catch2::Catch2WithMain)
@@ -1098,3 +1117,14 @@ catch_discover_tests(copter_sitl_run_test)
 add_executable(sim_longtail_test sim_longtail_test.cpp)
 target_link_libraries(sim_longtail_test PRIVATE ap-sim ap-motors Catch2::Catch2WithMain)
 catch_discover_tests(sim_longtail_test)
+
+# VCP-011: SitlQuadPlaneHarness + quadplane_sitl_run hover/transition catalog.
+add_executable(sitl_quadplane_harness_test sitl_quadplane_harness_test.cpp)
+target_link_libraries(sitl_quadplane_harness_test PRIVATE ap-hal-sitl ap-vehicle ap-sim ap-quadplane Catch2::Catch2WithMain)
+# VCP-013: reuses the exact fixture-path convention CPP-094/CCP-067 already
+# established (an absolute, CMAKE_CURRENT_SOURCE_DIR-derived compile
+# definition) so this target can load the same real tests/fixtures/
+# Callisto.json fixture CCP-067 added, instead of duplicating it.
+target_compile_definitions(sitl_quadplane_harness_test PRIVATE
+    FWCPP_SIM_FRAME_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+catch_discover_tests(sitl_quadplane_harness_test)

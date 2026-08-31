@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <fwcpp/sim/sim_rf.hpp>
+#include <fwcpp/sim/sim_pack.hpp>
 
 using namespace fwcpp::sim;
 
@@ -64,4 +65,44 @@ TEST_CASE("Maxsonar original encoding is inches") {
     REQUIRE(n > 0);
     REQUIRE(buf[n - 1] == 0x0d);
     REQUIRE(buf[0] == 0x31);  // 1 inch
+}
+
+TEST_CASE("RF_MAVLink DISTANCE_SENSOR is MAVLink2 msgid 132") {
+    auto rf = create_serial_rangefinder("rf_mavlink");
+    REQUIRE(rf != nullptr);
+    std::uint8_t buf[64]{};
+    const auto n = rf->packet_for_alt(1.25f, buf, sizeof(buf));
+    REQUIRE(n >= 12);
+    REQUIRE(buf[0] == 0xFD);
+    const std::uint32_t msgid = static_cast<std::uint32_t>(buf[7] | (buf[8] << 8) | (buf[9] << 16));
+    REQUIRE(msgid == 132);
+    REQUIRE(buf[1] == 39);
+}
+
+TEST_CASE("LightWare GRF stream gate and DISTANCE_DATA_CM encode") {
+    REQUIRE(create_serial_rangefinder("lightware_grf") != nullptr);
+    RF_LightWareGRF grf;
+    std::uint8_t buf[32]{};
+    REQUIRE(grf.packet_for_alt(1.25f, buf, sizeof(buf)) == 0);  // stream not enabled
+    // STREAM=5 config
+    std::uint8_t cfg[16]{};
+    cfg[0] = 0xAA;
+    std::uint16_t flags = 0x1;
+    flags = static_cast<std::uint16_t>(flags | ((1 + 4) << 6));
+    cfg[1] = static_cast<std::uint8_t>(flags);
+    cfg[2] = static_cast<std::uint8_t>(flags >> 8);
+    cfg[3] = 30;  // STREAM
+    std::uint32_t stream = 5;
+    std::memcpy(&cfg[4], &stream, 4);
+    std::uint16_t crc = 0;
+    for (int i = 0; i < 8; i++) {
+        crc = crc_xmodem_update(crc, cfg[i]);
+    }
+    cfg[8] = static_cast<std::uint8_t>(crc);
+    cfg[9] = static_cast<std::uint8_t>(crc >> 8);
+    grf.write_to_device(reinterpret_cast<const char*>(cfg), 10);
+    const auto n = grf.packet_for_alt(1.25f, buf, sizeof(buf));
+    REQUIRE(n >= 12);
+    REQUIRE(buf[0] == 0xAA);
+    REQUIRE(buf[3] == 44);  // DISTANCE_DATA_CM
 }

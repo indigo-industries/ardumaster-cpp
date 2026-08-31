@@ -16,14 +16,16 @@ target_link_libraries(sitl_run PRIVATE ap-hal-sitl)
 add_executable(copter_sitl_run copter_main.cpp)
 target_link_libraries(copter_sitl_run PRIVATE ap-hal-sitl)
 
+# VCP-011: QuadPlane analogue of sitl_run / copter_sitl_run.
 add_executable(quadplane_sitl_run quadplane_main.cpp)
-target_link_libraries(quadplane_sitl_run PRIVATE ap-sim)
+target_link_libraries(quadplane_sitl_run PRIVATE ap-hal-sitl)
 
-# WOPR-BRIDGE: lockstep UDP bridge around SitlHarness for the WOPR5000
-# Unreal sim (external-autopilot mode). Same ap-hal-sitl link as sitl_run,
-# plus the platform socket library. Linked statically so the executable can
-# be spawned by a host process without the llvm-mingw runtime DLLs
-# (libc++.dll/libunwind.dll/libwinpthread-1.dll) on PATH.
+# WOPR-BRIDGE: lockstep UDP bridge around SitlHarness (fixed-wing) and
+# SitlQuadPlaneHarness (VTOL models) for the WOPR5000 Unreal sim
+# (external-autopilot mode). Same ap-hal-sitl link as sitl_run, plus the
+# MAVLink framer and the platform socket library. Linked statically so the
+# executable can be spawned by a host process without the llvm-mingw
+# runtime DLLs (libc++.dll/libunwind.dll/libwinpthread-1.dll) on PATH.
 add_executable(wopr_bridge wopr_bridge.cpp)
 target_link_libraries(wopr_bridge PRIVATE ap-hal-sitl ap-gcs)
 if(WIN32)

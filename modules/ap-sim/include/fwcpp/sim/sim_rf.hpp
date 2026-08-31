@@ -2,9 +2,8 @@
 
 // Port of libraries/SITL/SIM_RF_* serial rangefinders constructed by
 // AP_HAL_SITL/SITL_State_common.cpp serial_rangefinder_definitions[].
-// RF_MAVLink is omitted here (needs GCS_MAVLink). LightWare GRF stream
-// config is a follow-on; packet_for_alt is still original distance framing
-// when stream_enabled.
+// RF_MAVLink encodes MAVLink2 DISTANCE_SENSOR without GCS. LightWare GRF
+// stream config (STREAM=5) is original-source.
 
 #include <cstdint>
 #include <cstdio>
@@ -13,7 +12,9 @@
 #include <string>
 
 #include <fwcpp/sim/sim_crc.hpp>
+#include <fwcpp/sim/sim_serial_device.hpp>
 #include <fwcpp/sim/sim_serial_rangefinder.hpp>
+#include <fwcpp/sim/sim_rf_mavlink_grf.hpp>
 
 namespace fwcpp::sim {
 
@@ -513,6 +514,8 @@ inline std::unique_ptr<SerialRangeFinder> create_serial_rangefinder(const char* 
     if (n == "USD1_v0") return std::make_unique<RF_USD1_v0>();
     if (n == "USD1_v1") return std::make_unique<RF_USD1_v1>();
     if (n == "wasp") return std::make_unique<RF_Wasp>();
+    if (n == "rf_mavlink") return std::make_unique<RF_MAVLink>();
+    if (n == "lightware_grf") return std::make_unique<RF_LightWareGRF>();
     return nullptr;
 }
 

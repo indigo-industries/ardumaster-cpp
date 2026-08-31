@@ -1,9 +1,26 @@
 #pragma once
 
 // Minimal JSON object parser for SIM_Frame::load_frame_params and
-// SIM_Plane::load_coeffs. Original uses AP_JSON (nlohmann wrapper).
+// SIM_Plane::load_coeffs. Original uses AP_JSON (picojson-based; see that
+// library's own header for the "nlohmann" note this comment used to carry -
+// AP_JSON.cpp is in fact a picojson fork, verified directly).
 // Supports objects, arrays, numbers, strings, bools, null. Enough for
 // Tools/autotest/models/*.json.
+//
+// CPP-094: "#"-prefixed line comments are supported (skip(), below),
+// matching upstream's OWN real AP_JSON.cpp (lines 81-90): it strips
+// everything from a bare '#' to end-of-line as a preprocessing pass before
+// handing the text to its parser, specifically so hand-written model files
+// like skywalker_2013.json (which use "#" throughout, not "//") load
+// correctly. This was a real, disclosed gap until CPP-094: a byte-for-byte
+// copy of that real upstream file failed to parse here at all before this
+// fix - caught by CPP-094's own round-trip fidelity test in
+// sim_plane_test.cpp. Unlike upstream's naive whole-text prescan (which
+// clobbers a bare '#' even inside a quoted string value), this parser only
+// treats '#' as a comment starter between tokens (skip() is never called
+// mid-string) - a real, deliberate divergence, and a strictly safer one for
+// any JSON string value that happens to contain '#'; skywalker_2013.json
+// itself has no such string, so this doesn't affect this ticket's fixture.
 
 #include <cctype>
 #include <cstdio>
@@ -63,6 +80,16 @@ private:
             }
             if (c == '/' && i_ + 1 < s_.size() && s_[i_ + 1] == '/') {
                 i_ += 2;
+                while (i_ < s_.size() && s_[i_] != '\n') {
+                    ++i_;
+                }
+                continue;
+            }
+            // CPP-094: '#'-to-end-of-line, matching upstream's real
+            // AP_JSON.cpp comment stripping (lines 81-90) - see this file's
+            // own banner for why this exists (skywalker_2013.json uses '#',
+            // not '//').
+            if (c == '#') {
                 while (i_ < s_.size() && s_[i_] != '\n') {
                     ++i_;
                 }

@@ -3,7 +3,7 @@
 // Port of libraries/SITL/SIM_I2C.h/.cpp, SIM_I2CDevice.h/.cpp (8/16-bit
 // registers + I2CCommandResponseDevice), SIM_QMC5883L, SIM_MaxSonarI2CXL.
 // ioctl dispatch matches SIM_I2C::ioctl_rdwr. AP_HAL panic becomes false
-// return. LED drivers unused by Copter/Plane SITL are not instantiated.
+// return. LED drivers are instantiated via populate_led_i2c_devices (original SIM_I2C bus).
 
 #include <cstdint>
 #include <cstring>

@@ -132,6 +132,93 @@ TEST_CASE("SitlCopterHarness motor PWM drives Frame mixing", "[copter][sitl][ccp
     REQUIRE(sim.gyro.x > 0.05f);  // +roll rate from left-high differential
 }
 
+TEST_CASE("SitlCopterHarness mixer_ is a distinct per-instance object, not shared",
+          "[copter][sitl][ccp-066]") {
+    // CCP-066: mixer_ used to be a function-local `static` in
+    // apply_motor_pwm, so every SitlCopterHarness instance in the process
+    // shared exactly one MotorsMatrix. This is the direct, unambiguous
+    // regression test for that: two independently-constructed harnesses
+    // must have two distinct mixer_ objects. This would have FAILED under
+    // the old code (both accessors would have returned the address of the
+    // one shared function-local static, regardless of `this`).
+    LeftoverCopter copter_a{};
+    SimMulticopter sim_a{};
+    SitlCopterHarness harness_a(copter_a, sim_a);
+
+    LeftoverCopter copter_b{};
+    SimMulticopter sim_b{};
+    SitlCopterHarness harness_b(copter_b, sim_b);
+
+    REQUIRE(&harness_a.mixer_for_test() != &harness_b.mixer_for_test());
+}
+
+TEST_CASE("SitlCopterHarness two instances mix independently without cross-contamination",
+          "[copter][sitl][ccp-066]") {
+    // Two harnesses given genuinely different, non-trivial roll/pitch/
+    // throttle commands (large enough to clear apply_motor_pwm's own
+    // near-zero early-return) must each mix motor_pwm from their OWN
+    // commands only. Interleaving their steps must not perturb either
+    // one's own trajectory - a real, behavioral consequence of CCP-066's
+    // fix, complementing the direct address-identity test above.
+    constexpr std::size_t kQuadMotors = 4;
+    constexpr float kDt = 0.0025f;
+
+    LeftoverCopter copter_b{};
+    copter_b.motors_armed = true;
+    copter_b.throttle_out = 0.3f;
+    copter_b.roll_target_rad = -0.20f;
+    copter_b.pitch_target_rad = 0.0f;
+    SimMulticopter sim_b{};
+    SitlCopterHarness harness_b(copter_b, sim_b);
+
+    // Run A alone for two steps, recording its own uninterrupted result.
+    LeftoverCopter copter_a{};
+    copter_a.motors_armed = true;
+    copter_a.throttle_out = 0.6f;
+    copter_a.roll_target_rad = 0.20f;
+    copter_a.pitch_target_rad = 0.0f;
+    SimMulticopter sim_a{};
+    SitlCopterHarness harness_a(copter_a, sim_a);
+    harness_a.step(kDt);
+    harness_a.step(kDt);
+    std::uint16_t pwm_a_uninterrupted[kQuadMotors];
+    for (std::size_t i = 0; i < kQuadMotors; ++i) {
+        pwm_a_uninterrupted[i] = copter_a.motor_pwm[i];
+    }
+
+    // Reset A to the same starting condition and re-run its own two steps,
+    // this time interleaved with two steps of B carrying opposite-sign
+    // commands in between.
+    LeftoverCopter copter_a2{};
+    copter_a2.motors_armed = true;
+    copter_a2.throttle_out = 0.6f;
+    copter_a2.roll_target_rad = 0.20f;
+    copter_a2.pitch_target_rad = 0.0f;
+    SimMulticopter sim_a2{};
+    SitlCopterHarness harness_a2(copter_a2, sim_a2);
+
+    harness_a2.step(kDt);
+    harness_b.step(kDt);
+    harness_a2.step(kDt);
+    harness_b.step(kDt);
+
+    for (std::size_t i = 0; i < kQuadMotors; ++i) {
+        REQUIRE(copter_a2.motor_pwm[i] == pwm_a_uninterrupted[i]);
+    }
+
+    // Also confirm A and B's own left/right-differential roll commands
+    // produced genuinely different mixing (a basic correctness sanity
+    // check, not itself the regression test above).
+    bool any_motor_differs = false;
+    for (std::size_t i = 0; i < kQuadMotors; ++i) {
+        if (copter_a2.motor_pwm[i] != copter_b.motor_pwm[i]) {
+            any_motor_differs = true;
+            break;
+        }
+    }
+    REQUIRE(any_motor_differs);
+}
+
 TEST_CASE("leftover_copter_tick wires update_flight_mode when Mode* set",
           "[copter][sitl][ccp-043]") {
     LeftoverCopter copter{};
@@ -140,18 +227,23 @@ TEST_CASE("leftover_copter_tick wires update_flight_mode when Mode* set",
     REQUIRE(copter.tick_count == 0);
     leftover_copter_tick(copter);
     REQUIRE(copter.tick_count == 1);
+    REQUIRE(copter.loop_ran_update_flight_mode);
+    REQUIRE(copter.loop_ran_rate_controller);
+    REQUIRE(copter.loop_ran_motors_output);
+    REQUIRE(copter.loop_ran_read_ahrs);
 }
 
 TEST_CASE("SitlCopterHarness leftover catalog remaining_count",
           "[copter][sitl][ccp-043][leftover]") {
     REQUIRE(remaining_count() == 0);
-    REQUIRE(this_slice_count() == 9);
+    REQUIRE(this_slice_count() == 10);
     REQUIRE(on_main_count() == 3);
     REQUIRE(out_of_scope_count() == 2);
     REQUIRE(completeness_size() ==
             on_main_count() + this_slice_count() + remaining_count() + out_of_scope_count());
     REQUIRE(completeness_has("SitlCopterHarness scaffold", PortStatus::kThisSlice));
     REQUIRE(completeness_has("leftover_copter_tick", PortStatus::kThisSlice));
+    REQUIRE(completeness_has("leftover_copter_loop", PortStatus::kThisSlice));
     REQUIRE(completeness_has("gyro/accel synthesis", PortStatus::kThisSlice));
     REQUIRE(completeness_has("baro synthesis", PortStatus::kThisSlice));
     REQUIRE(completeness_has("GPS synthesis", PortStatus::kThisSlice));

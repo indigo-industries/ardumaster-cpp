@@ -1,8 +1,9 @@
 #pragma once
 
-// CCP-043: SitlCopterHarness — Copter analogue of SitlHarness (CPP-084).
-// CCP-045: motor PWM → SimMulticopter Frame/Motor plant (the previously
-// OOS motor→aero path). No longer uses SimPlane as the quad model.
+// CCP-043: SitlCopterHarness - Copter analogue of SitlHarness (CPP-084).
+// CCP-045: motor PWM -> SimMulticopter Frame/Motor plant.
+// CCP-065: PWM mixing is MotorsMatrix from AC_PosControl NE lean + D throttle.
+// leftover_apply_collective is not the XY path.
 //
 // Upstream ROLE: AP_HAL_SITL SITL_State sensor synthesis for ArduCopter.
 // Not a port of AP_HAL_SITL source (ADR-0012). Mirrors SitlHarness:
@@ -10,6 +11,7 @@
 // plant. Copter plant is SimMulticopter (SIM_Multicopter Frame/Motor),
 // not SimPlane.
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -17,6 +19,8 @@
 #include <fwcpp/copter/leftover_copter.hpp>
 #include <fwcpp/copter/mode_stabilize.hpp>
 #include <fwcpp/location.hpp>
+#include <fwcpp/math/scalar.hpp>
+#include <fwcpp/motors/motors_matrix.hpp>
 #include <fwcpp/sim/sim_baro.hpp>
 #include <fwcpp/sim/sim_gps.hpp>
 #include <fwcpp/sim/sim_motor.hpp>
@@ -26,15 +30,25 @@ namespace fwcpp::hal_sitl {
 
 class SitlCopterHarness {
 public:
+    // CCP-066: mixer_ used to be a function-local `static` in
+    // apply_motor_pwm, shared by every SitlCopterHarness instance in the
+    // process (a real multi-vehicle/multi-test state-sharing bug, and
+    // -fno-threadsafe-statics meant even its one-time init wasn't
+    // guarded). It is now a genuine per-instance member, initialized once
+    // per instance right here in the constructor.
     SitlCopterHarness(copter::LeftoverCopter& copter, sim::SimMulticopter& sim)
-        : copter_(copter), sim_(sim) {}
+        : copter_(copter), sim_(sim) {
+        mixer_.setup_motors(motors::MotorsMatrix::FrameClass::Quad, motors::MotorsMatrix::FrameType::X);
+        mixer_.normalise_rpy_factors();
+        mixer_.set_throttle_thrust_max(1.0f);
+    }
 
     // Synthesize gyro/accel/baro/GPS/compass from sim_ into leftover
     // sensor buffers, inject arm/spool/attitude-hold smoke flags, tick
-    // leftover Copter, then feed motor_pwm into SimMulticopter::update
-    // (Frame/Motor mixing + Aircraft dynamics). Matches SitlHarness
-    // sensors-then-plant order.
+    // leftover Copter, mix MotorsMatrix PWM from PosControl NE lean + D
+    // throttle, then feed motor_pwm into SimMulticopter::update.
     void step(float dt) {
+        copter_.loop_dt = dt;
         copter_.gyro_buffer = sim_.gyro;
         copter_.accel_buffer = sim_.accel_body;
         copter_.gyro_injected = true;
@@ -66,6 +80,7 @@ public:
         copter_.attitude_hold_injected = true;
 
         copter::leftover_copter_tick(copter_);
+        apply_motor_pwm(dt);
 
         sim::SitlInput input;
         for (std::uint8_t i = 0; i < sim::kSitlServoChannels; ++i) {
@@ -76,16 +91,60 @@ public:
 
     [[nodiscard]] copter::LeftoverCopter& copter() { return copter_; }
     [[nodiscard]] sim::SimMulticopter& sim() { return sim_; }
-    // Alias kept so CCP-043 tests that called sim_plane() still compile
-    // if updated to sim(); new name is sim().
     [[nodiscard]] sim::SimMulticopter& sim_plane() { return sim_; }
     [[nodiscard]] const compass::Compass& compass() const { return compass_; }
     [[nodiscard]] std::uint32_t tick_count() const { return copter_.tick_count; }
 
+    // CCP-066: test-only accessor proving mixer_ is a genuine per-instance
+    // member (distinct address per SitlCopterHarness) rather than the
+    // function-local `static` it used to be (one shared address for every
+    // instance in the process, regardless of `this`).
+    [[nodiscard]] const motors::MotorsMatrix& mixer_for_test() const { return mixer_; }
+
 private:
+    void apply_motor_pwm(float dt) {
+        if (!copter_.motors_armed) {
+            for (std::uint8_t i = 0; i < sim::kSitlServoChannels; ++i) {
+                copter_.motor_pwm[i] = 0;
+            }
+            return;
+        }
+        // CCP-045 tests inject differential motor_pwm without PosControl.
+        // Mix from NE lean + D throttle only when the mission actually
+        // commanded collective/lean this tick.
+        if (copter_.throttle_out <= 1.0e-6f && std::fabs(copter_.roll_target_rad) <= 1.0e-6f &&
+            std::fabs(copter_.pitch_target_rad) <= 1.0e-6f) {
+            return;
+        }
+        float roll = 0.0f, pitch = 0.0f, yaw = 0.0f;
+        sim_.dcm.to_euler(&roll, &pitch, &yaw);
+        constexpr float kAttP = 2.0f;
+        const float roll_in =
+            math::constrain_value(kAttP * (copter_.roll_target_rad - roll), -1.0f, 1.0f);
+        const float pitch_in =
+            math::constrain_value(kAttP * (copter_.pitch_target_rad - pitch), -1.0f, 1.0f);
+        const float yaw_in = math::constrain_value(-0.2f * sim_.gyro.z, -1.0f, 1.0f);
+        const float command = math::constrain_value(copter_.throttle_out, 0.0f, 1.0f);
+        bool lr = false, lp = false, ly = false, ll = false, lu = false;
+        mixer_.output_armed_stabilizing(roll_in, 0.0f, pitch_in, 0.0f, yaw_in, 0.0f, command, command, 0.0f, 1.0f, dt,
+                                        lr, lp, ly, ll, lu);
+        mixer_.set_spool_state(motors::MotorsMatrix::SpoolState::ThrottleUnlimited);
+        motors::ThrustLinParams params;
+        params.curve_expo = 0.0f;
+        params.spin_min = 0.0f;
+        params.spin_max = 1.0f;
+        mixer_.output_to_motors(true, false, 0.0f, 0.0f, 0.0f, params, dt, 1000, 2000);
+        const auto& frame = sim_.frame();
+        for (std::uint8_t i = 0; i < frame.num_motors; ++i) {
+            copter_.motor_pwm[frame.motor_offset + frame.motors[i].servo] =
+                static_cast<std::uint16_t>(mixer_.pwm_out(i));
+        }
+    }
+
     copter::LeftoverCopter& copter_;
     sim::SimMulticopter& sim_;
     compass::Compass compass_{};
+    motors::MotorsMatrix mixer_{};
 };
 
 namespace sitl_copter {
@@ -108,19 +167,21 @@ inline constexpr PortItem kCompleteness[] = {
     {"SitlCopterHarness scaffold", PortStatus::kThisSlice,
      "refs LeftoverCopter + SimMulticopter; step sensor inject + leftover_copter_tick"},
     {"leftover_copter_tick", PortStatus::kThisSlice,
-     "tick counter + CCP-035 update_flight_mode when Mode* set"},
+     "CCP-064: leftover_copter_loop = Copter::loop leftover scheduler + update_flight_mode"},
+    {"leftover_copter_loop", PortStatus::kThisSlice,
+     "FAST_TASK rate/motors/AHRS/inertia/ekf/mode + SCHED_TASK rc/throttle/nav"},
     {"gyro/accel synthesis", PortStatus::kThisSlice,
-     "SimMulticopter::gyro / accel_body → leftover buffers + inject flags"},
+     "SimMulticopter::gyro / accel_body -> leftover buffers + inject flags"},
     {"baro synthesis", PortStatus::kThisSlice,
-     "SimMulticopter altitude (-position.z) → leftover baro_altitude_m + flag"},
+     "SimMulticopter altitude (-position.z) -> leftover baro_altitude_m + flag"},
     {"GPS synthesis", PortStatus::kThisSlice,
-     "home lat/lng + SimMulticopter NED north/east → leftover gps_lat/gps_lng + flag"},
+     "home lat/lng + SimMulticopter NED north/east -> leftover gps_lat/gps_lng + flag"},
     {"compass synthesis", PortStatus::kThisSlice,
-     "Compass earth field via SimMulticopter::dcm → compass_field_bf + flag"},
+     "Compass earth field via SimMulticopter::dcm -> compass_field_bf + flag"},
     {"closed-loop arm/spool/hold", PortStatus::kThisSlice,
      "step injects motors_armed + spool + attitude_hold smoke"},
     {"motor PWM to SimMulticopter", PortStatus::kThisSlice,
-     "CCP-045: leftover motor_pwm[] → SitlInput.servos → Frame/Motor plant"},
+     "CCP-065: PosControl NE lean + D throttle -> MotorsMatrix PWM -> Frame/Motor; leftover_apply_collective is not XY"},
     {"SitlHarness Plane path (CPP-084)", PortStatus::kOnMain,
      "sitl_harness.hpp; Plane+SimPlane closed loop"},
     {"CCP-035 update_flight_mode", PortStatus::kOnMain,

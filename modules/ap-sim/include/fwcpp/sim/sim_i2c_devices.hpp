@@ -4,8 +4,7 @@
 // Generic/Maxell/Rotoye, TeraRangerI2C, LightWareI2C_Legacy16Bit,
 // LightWareGRF_I2C, Airspeed_DLVR, TFMiniPlus I2C, TFS20L, SHT3x/TSYS01/
 // TSYS03/MCP9600, AS5600, ICM40609 (via InvensenseV3). LED drivers
-// (Toshiba/LP5562/LM2755/IS31FL3195) are constructed on the original
-// SIM_I2C bus but Copter/Plane SITL never probes them — skipped.
+// LED drivers (Toshiba/LP5562/LM2755/IS31FL3195) are on the original SIM_I2C bus.
 
 #include <algorithm>
 #include <cmath>
@@ -19,6 +18,7 @@
 #include <fwcpp/sim/sim_atmosphere.hpp>
 #include <fwcpp/sim/sim_crc.hpp>
 #include <fwcpp/sim/sim_i2c.hpp>
+#include <fwcpp/sim/sim_i2c_leds.hpp>
 
 namespace fwcpp::sim {
 
@@ -1128,6 +1128,15 @@ inline void populate_default_i2c_bus(I2C& bus, TeraRangerI2C& teraranger, LightW
         {1, 0x0B, &rotoye},     {2, 0x0B, &maxell},   {3, 0x0B, &smbus},    {2, 0x28, &dlvr},   {2, 0x09, &tfmini},
         {2, 0x40, &tsys03},     {2, 0x77, &ms5611},   {2, 0x0D, &qmc},      {0, 0x10, &tfs20l}, {2, 0x66, &grf},
     };
+}
+
+
+inline void populate_led_i2c_devices(I2C& bus, ToshibaLED& toshiba, LP5562& lp, LM2755& lm, IS31FL3195& is31) {
+    is31.set_product_id(0x54);
+    bus.devices.push_back({1, 0x55, &toshiba});
+    bus.devices.push_back({2, 0x30, &lp});
+    bus.devices.push_back({2, 0x67, &lm});
+    bus.devices.push_back({2, 0x54, &is31});
 }
 
 }  // namespace fwcpp::sim

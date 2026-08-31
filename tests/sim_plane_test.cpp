@@ -1,8 +1,11 @@
 // Tests for fwcpp::sim::SimPlane (CPP-030: STANDARD-config ground-truth
 // fixed-wing flight dynamics, ported from upstream SITL::Plane; CPP-051:
-// wind modeling - steady vector + turbulence gusts).
+// wind modeling - steady vector + turbulence gusts; CPP-094: load_coeffs()
+// round-trip fidelity against a real upstream fixture, and the -heavy/-jet
+// mass/thrust_scale frame overrides).
 
 #include <cmath>
+#include <string>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -493,4 +496,144 @@ TEST_CASE("a steady crosswind measurably shifts groundtrack/groundspeed relative
     // And wind_ef on the crosswind plane really did hold the expected,
     // sign-verified value throughout (not just nonzero).
     REQUIRE(plane_crosswind.wind_ef.y == Catch::Approx(-6.0f).margin(1e-4f));
+}
+
+// --- CPP-094: load_coeffs() round-trip fidelity against real upstream
+// content, and the -heavy/-jet mass/thrust_scale frame overrides ---
+
+TEST_CASE("load_coeffs() loading the real upstream skywalker_2013.json fixture reproduces the hardcoded defaults exactly",
+          "[sim_plane][load_coeffs]") {
+    // tests/fixtures/skywalker_2013.json is a byte-for-byte copy of
+    // upstream's OWN Tools/autotest/models/skywalker_2013.json
+    // (Plane-4.7.0) - verified directly to be the ONLY real native-format
+    // Plane coefficient file anywhere in the pinned upstream tree
+    // (`grep -rl c_lift_a` across the whole pinned tree matches nothing
+    // else). Callisto.json/freestyle.json (also under Tools/autotest/
+    // models/) are MULTICOPTER frame-config formats (mass/battery/
+    // motor-count fields, not aerodynamic coefficients) and
+    // xplane_plane.json/xplane_heli.json are DREF mapping configs for the
+    // unrelated X-Plane external-FDM backend - none of the three are valid
+    // load_coeffs() inputs; see sim_plane.hpp's own file banner.
+    //
+    // Coefficients{}'s hardcoded defaults are THEMSELVES transcribed from
+    // this exact file (see Coefficients's own doc comment, "from
+    // last_letter skywalker_2013/aerodynamics.yaml"), so a correct
+    // load_coeffs() must reproduce every one of them exactly - a genuine
+    // round-trip fidelity check against real upstream content, not merely
+    // a parser-mechanics smoke test against a synthetic fixture.
+    SimPlane plane;
+    const std::string path = std::string(FWCPP_SIM_PLANE_FIXTURES_DIR) + "/skywalker_2013.json";
+    REQUIRE(plane.load_coeffs(path.c_str()));
+
+    const Coefficients defaults;
+    const Coefficients& loaded = plane.coefficient;
+    REQUIRE(loaded.s == Catch::Approx(defaults.s));
+    REQUIRE(loaded.b == Catch::Approx(defaults.b));
+    REQUIRE(loaded.c == Catch::Approx(defaults.c));
+    REQUIRE(loaded.c_lift_0 == Catch::Approx(defaults.c_lift_0));
+    REQUIRE(loaded.c_lift_deltae == Catch::Approx(defaults.c_lift_deltae));
+    REQUIRE(loaded.c_lift_a == Catch::Approx(defaults.c_lift_a));
+    REQUIRE(loaded.c_lift_q == Catch::Approx(defaults.c_lift_q));
+    REQUIRE(loaded.mcoeff == Catch::Approx(defaults.mcoeff));
+    REQUIRE(loaded.oswald == Catch::Approx(defaults.oswald));
+    REQUIRE(loaded.alpha_stall == Catch::Approx(defaults.alpha_stall));
+    REQUIRE(loaded.c_drag_q == Catch::Approx(defaults.c_drag_q));
+    REQUIRE(loaded.c_drag_deltae == Catch::Approx(defaults.c_drag_deltae));
+    REQUIRE(loaded.c_drag_p == Catch::Approx(defaults.c_drag_p));
+    REQUIRE(loaded.c_y_0 == Catch::Approx(defaults.c_y_0));
+    REQUIRE(loaded.c_y_b == Catch::Approx(defaults.c_y_b));
+    REQUIRE(loaded.c_y_p == Catch::Approx(defaults.c_y_p));
+    REQUIRE(loaded.c_y_r == Catch::Approx(defaults.c_y_r));
+    REQUIRE(loaded.c_y_deltaa == Catch::Approx(defaults.c_y_deltaa));
+    REQUIRE(loaded.c_y_deltar == Catch::Approx(defaults.c_y_deltar));
+    REQUIRE(loaded.c_l_0 == Catch::Approx(defaults.c_l_0));
+    REQUIRE(loaded.c_l_p == Catch::Approx(defaults.c_l_p));
+    REQUIRE(loaded.c_l_b == Catch::Approx(defaults.c_l_b));
+    REQUIRE(loaded.c_l_r == Catch::Approx(defaults.c_l_r));
+    REQUIRE(loaded.c_l_deltaa == Catch::Approx(defaults.c_l_deltaa));
+    REQUIRE(loaded.c_l_deltar == Catch::Approx(defaults.c_l_deltar));
+    REQUIRE(loaded.c_m_0 == Catch::Approx(defaults.c_m_0));
+    REQUIRE(loaded.c_m_a == Catch::Approx(defaults.c_m_a));
+    REQUIRE(loaded.c_m_q == Catch::Approx(defaults.c_m_q));
+    REQUIRE(loaded.c_m_deltae == Catch::Approx(defaults.c_m_deltae));
+    REQUIRE(loaded.c_n_0 == Catch::Approx(defaults.c_n_0));
+    REQUIRE(loaded.c_n_b == Catch::Approx(defaults.c_n_b));
+    REQUIRE(loaded.c_n_p == Catch::Approx(defaults.c_n_p));
+    REQUIRE(loaded.c_n_r == Catch::Approx(defaults.c_n_r));
+    REQUIRE(loaded.c_n_deltaa == Catch::Approx(defaults.c_n_deltaa));
+    REQUIRE(loaded.c_n_deltar == Catch::Approx(defaults.c_n_deltar));
+    REQUIRE(loaded.deltaa_max == Catch::Approx(defaults.deltaa_max));
+    REQUIRE(loaded.deltae_max == Catch::Approx(defaults.deltae_max));
+    REQUIRE(loaded.deltar_max == Catch::Approx(defaults.deltar_max));
+
+    // The CG-offset vector - the field CPP-094 found was silently never
+    // loading before this ticket (load_coeffs() read the key as "cg";
+    // upstream's real key, SIM_Plane.cpp:191, is "CGOffset" - see
+    // load_coeffs()'s own doc comment). Checked explicitly and separately
+    // so a regression here can't hide behind the scalar-field checks above.
+    REQUIRE(loaded.cg_offset.x == Catch::Approx(defaults.cg_offset.x));
+    REQUIRE(loaded.cg_offset.y == Catch::Approx(defaults.cg_offset.y));
+    REQUIRE(loaded.cg_offset.z == Catch::Approx(defaults.cg_offset.z));
+}
+
+TEST_CASE("load_coeffs() returns false and leaves coefficients untouched for a nonexistent path", "[sim_plane][load_coeffs]") {
+    SimPlane plane;
+    const Coefficients before = plane.coefficient;
+    REQUIRE_FALSE(plane.load_coeffs("/does/not/exist/CPP-094-nonexistent.json"));
+    REQUIRE(plane.coefficient.s == before.s);
+    REQUIRE(plane.coefficient.cg_offset.x == before.cg_offset.x);
+}
+
+TEST_CASE("MassVariant::kStandard leaves mass and thrust_scale at the plain pre-CPP-094 defaults", "[sim_plane][mass_variant]") {
+    SimPlane plane;
+    REQUIRE(plane.mass == Catch::Approx(2.0f));
+    const float expected = (2.0f * kGravityMss) / 0.7f;
+    REQUIRE(plane.thrust_scale() == Catch::Approx(expected));
+}
+
+TEST_CASE("MassVariant::kHeavy sets mass=8 but leaves thrust_scale at the pre-heavy baseline - the real upstream asymmetry",
+          "[sim_plane][mass_variant]") {
+    // Upstream SIM_Plane.cpp:53-54: `if (strstr(frame_str, "-heavy")) { mass = 8; }`
+    // - mass alone changes, thrust_scale is untouched. Re-verified directly
+    // against the real source before writing this test (see
+    // sim_plane.hpp's MassVariant doc comment) - deliberately NOT assumed
+    // symmetric with kJet below.
+    SimPlane plane(Coefficients{}, 2.0f, 0.7f, 20260827U, MassVariant::kHeavy);
+    REQUIRE(plane.mass == Catch::Approx(8.0f));
+
+    // thrust_scale is computed from the PRE-heavy baseline mass (2.0f, the
+    // mass_kg passed to the constructor here), NOT the real post-heavy
+    // 8kg mass.
+    const float baseline_thrust_scale = (2.0f * kGravityMss) / 0.7f;
+    REQUIRE(plane.thrust_scale() == Catch::Approx(baseline_thrust_scale));
+
+    // Directly disproves the naive "thrust_scale follows mass" assumption
+    // kJet's own test below confirms IS how kJet behaves: if kHeavy
+    // recomputed the same way, thrust_scale would equal this larger value
+    // instead.
+    const float if_it_incorrectly_followed_mass = (8.0f * kGravityMss) / 0.7f;
+    REQUIRE(plane.thrust_scale() != Catch::Approx(if_it_incorrectly_followed_mass));
+}
+
+TEST_CASE("MassVariant::kJet sets mass=22 and recomputes thrust_scale from the new mass", "[sim_plane][mass_variant]") {
+    // Upstream SIM_Plane.cpp:56-58 ("a 22kg jet, level top speed is
+    // 102m/s", comment transcribed verbatim in sim_plane.hpp): mass=22,
+    // thrust_scale = (mass * GRAVITY_MSS) / hover_throttle, RECOMPUTED
+    // from the new mass - the opposite of kHeavy's asymmetry above.
+    SimPlane plane(Coefficients{}, 2.0f, 0.7f, 20260827U, MassVariant::kJet);
+    REQUIRE(plane.mass == Catch::Approx(22.0f));
+
+    // By-hand derivation (also stated in this ticket's commit message):
+    // (22.0 * 9.80665) / 0.7 = 215.7463 / 0.7 = 308.209 N per unit
+    // throttle. Sanity-check that derivation against a literal here before
+    // using it as the expected value below.
+    REQUIRE(((22.0f * kGravityMss) / 0.7f) == Catch::Approx(308.209f).margin(0.01f));
+
+    const float expected_thrust_scale = (22.0f * kGravityMss) / 0.7f;
+    REQUIRE(plane.thrust_scale() == Catch::Approx(expected_thrust_scale));
+
+    // And explicitly distinct from kHeavy's own (unchanged) thrust_scale -
+    // the two branches must not collapse to the same behavior.
+    SimPlane heavy_plane(Coefficients{}, 2.0f, 0.7f, 20260827U, MassVariant::kHeavy);
+    REQUIRE(plane.thrust_scale() != Catch::Approx(heavy_plane.thrust_scale()));
 }
