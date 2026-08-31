@@ -187,6 +187,7 @@ struct StateReply {
     float airspeed_mps; // true airspeed from the plant
     float hagl_m;
     float servo_norm[4]; // aileron/elevator/rudder in [-1,1]; throttle in [0,1]
+    float vtol_lift;     // lift-motor collective actually applied [0,1]; 0 on fixed-wing sessions
     std::uint16_t mission_index;
     std::uint16_t mission_count;
     std::uint32_t sim_time_ms;
@@ -194,7 +195,7 @@ struct StateReply {
     std::uint8_t initialized;
     std::uint8_t pad[2];
 };
-static_assert(sizeof(StateReply) == 96);
+static_assert(sizeof(StateReply) == 100);
 #pragma pack(pop)
 
 // Host-facing mode ids. Names, not plane.hpp internals, are the contract.
@@ -401,7 +402,8 @@ public:
                 apply_vtol_sticks();
                 for (int k = 0; k < 8; ++k) {
                     const std::uint32_t sub_now = now_ms_ - 20 + static_cast<std::uint32_t>(((k + 1) * 20) / 8);
-                    qharness_.step(sub_now, 0.0025f, vtol_collective(), plane_.armed);
+                    last_vtol_lift_ = vtol_collective();
+                    qharness_.step(sub_now, 0.0025f, last_vtol_lift_, plane_.armed);
                 }
                 continue;
             }
@@ -701,6 +703,7 @@ public:
         r.servo_norm[2] =
             plane_.srv_channels.get_output_scaled(fwcpp::srv::Function::kRudder) / fwcpp::vehicle::kServoMax;
         r.servo_norm[3] = plane_.srv_channels.get_output_scaled(fwcpp::srv::Function::kThrottle) / 100.0f;
+        r.vtol_lift = vtol_ ? last_vtol_lift_ : 0.0f;
         r.mission_count = static_cast<std::uint16_t>(plane_.mission.size());
         r.mission_index = mission_progress_index();
         r.sim_time_ms = now_ms_;
@@ -823,6 +826,7 @@ private:
     bool vtol_ = false;
     BridgeMode vtol_mode_ = BridgeMode::kManual; // kQhover/kQland when vertical
     float vtol_hover_trim_ = 0.0f; // integral trim around the frame's hover command
+    float last_vtol_lift_ = 0.0f;  // collective applied on the most recent sub-step
     BridgeMode mode_ = BridgeMode::kManual;
     std::uint32_t now_ms_ = 0;
     std::uint16_t rc_pwm_[4] = {1500, 1500, 1100, 1500};
