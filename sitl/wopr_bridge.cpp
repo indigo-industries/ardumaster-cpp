@@ -63,12 +63,21 @@ using socklen_type = int;
 using socklen_type = socklen_t;
 #endif
 
+#include <chrono>
+
+#include <fwcpp/gcs/framing.hpp>
 #include <fwcpp/hal_sitl/sitl_harness.hpp>
 #include <fwcpp/location.hpp>
 #include <fwcpp/math/scalar.hpp>
 #include <fwcpp/sim/sim_plane.hpp>
 #include <fwcpp/vehicle/mode.hpp>
 #include <fwcpp/vehicle/plane.hpp>
+
+#ifdef _WIN32
+using sock_type = SOCKET;
+#else
+using sock_type = int;
+#endif
 
 namespace {
 
@@ -431,9 +440,140 @@ public:
         return Status::kOk;
     }
 
+    // The LIVE mode, derived from the flight code's own control_mode pointer —
+    // not the last host-commanded label. The two diverge when the vehicle
+    // transitions internally (ModeAUTO's mission-complete -> RTL), which made
+    // the old label lie to the host exactly when it mattered.
+    [[nodiscard]] BridgeMode current_mode() const {
+        const fwcpp::vehicle::Mode* m = plane_.control_mode;
+        if (m == &plane_.mode_fbwa) { return BridgeMode::kFbwa; }
+        if (m == &plane_.mode_fbwb) { return BridgeMode::kFbwb; }
+        if (m == &plane_.mode_cruise) { return BridgeMode::kCruise; }
+        if (m == &plane_.mode_auto) { return BridgeMode::kAuto; }
+        if (m == &plane_.mode_rtl) { return BridgeMode::kRtl; }
+        if (m == &plane_.mode_loiter) { return BridgeMode::kLoiter; }
+        if (m == &plane_.mode_takeoff) { return BridgeMode::kTakeoff; }
+        return BridgeMode::kManual;
+    }
+
+    // ---- GCS-facing entry points (MAVLink endpoint in main) ----
+
+    [[nodiscard]] bool is_initialized() const { return initialized_; }
+    [[nodiscard]] bool is_armed() const { return plane_.armed; }
+    [[nodiscard]] std::uint32_t sim_time_ms() const { return now_ms_; }
+    [[nodiscard]] const fwcpp::sim::SimPlane& sim() const { return sim_; }
+    [[nodiscard]] const fwcpp::vehicle::Plane& plane() const { return plane_; }
+
+    void gcs_arm(bool armed) {
+        ArmPayload p;
+        p.armed = armed ? 1 : 0;
+        (void)arm(p);
+    }
+
+    // ArduPlane custom-mode number -> bridge mode. Returns false for a mode
+    // this port doesn't have (STABILIZE, CIRCLE, GUIDED, Q*...).
+    bool gcs_set_mode_custom(std::uint32_t custom) {
+        ModePayload p;
+        switch (custom) {
+        case 0: p.mode = static_cast<std::uint8_t>(BridgeMode::kManual); break;
+        case 5: p.mode = static_cast<std::uint8_t>(BridgeMode::kFbwa); break;
+        case 6: p.mode = static_cast<std::uint8_t>(BridgeMode::kFbwb); break;
+        case 7: p.mode = static_cast<std::uint8_t>(BridgeMode::kCruise); break;
+        case 10: p.mode = static_cast<std::uint8_t>(BridgeMode::kAuto); break;
+        case 11: p.mode = static_cast<std::uint8_t>(BridgeMode::kRtl); break;
+        case 12: p.mode = static_cast<std::uint8_t>(BridgeMode::kLoiter); break;
+        case 13: p.mode = static_cast<std::uint8_t>(BridgeMode::kTakeoff); break;
+        default:
+            return false;
+        }
+        return set_mode(p) == Status::kOk;
+    }
+
+    // Bridge mode -> ArduPlane custom-mode number (heartbeat).
+    [[nodiscard]] static std::uint32_t arduplane_custom_mode(BridgeMode m) {
+        switch (m) {
+        case BridgeMode::kManual: return 0;
+        case BridgeMode::kFbwa: return 5;
+        case BridgeMode::kFbwb: return 6;
+        case BridgeMode::kCruise: return 7;
+        case BridgeMode::kAuto: return 10;
+        case BridgeMode::kRtl: return 11;
+        case BridgeMode::kLoiter: return 12;
+        case BridgeMode::kTakeoff: return 13;
+        }
+        return 0;
+    }
+
+    // One geodetic mission row from a MAVLink MISSION_ITEM_INT upload.
+    struct GcsGeoItem {
+        std::uint16_t seq = 0;
+        std::uint16_t command = 0;
+        std::uint8_t frame = 0;
+        float p1 = 0.0f;
+        float p2 = 0.0f;
+        std::int32_t lat_1e7 = 0;
+        std::int32_t lng_1e7 = 0;
+        float z = 0.0f;
+    };
+
+    // Load an uploaded geodetic mission: same NED-from-start conversion the
+    // WOPR wire path uses, but via the sim's real home Location so a GCS and
+    // the WOPR host agree on where every waypoint is. Rows the port can't fly
+    // (DO_*, CONDITION_*, loiters) are skipped; seq 0 NAV_WAYPOINT = home row.
+    // Returns the number of flyable items loaded, or -1 on failure.
+    int gcs_mission_load(const GcsGeoItem* rows, std::size_t n) {
+        if (!initialized_) {
+            return -1;
+        }
+        const fwcpp::Location home = sim_.get_home();
+        const float home_alt_m = static_cast<float>(home.alt) * 0.01f;
+        std::array<fwcpp::vehicle::MissionItem, fwcpp::vehicle::kMaxMissionItems> converted{};
+        std::size_t count = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            const GcsGeoItem& r = rows[i];
+            if (r.seq == 0 && r.command == 16) {
+                continue; // home row
+            }
+            fwcpp::vehicle::MissionItem m;
+            switch (r.command) {
+            case 16: m.command = fwcpp::vehicle::MissionCommand::Waypoint;
+                     m.acceptance_radius_m = std::fmax(0.0f, r.p2);
+                     break;
+            case 22: m.command = fwcpp::vehicle::MissionCommand::Takeoff;
+                     m.takeoff_pitch_deg = r.p1;
+                     break;
+            case 21: m.command = fwcpp::vehicle::MissionCommand::Land; break;
+            default:
+                continue; // unsupported row — skipped, not fatal
+            }
+            fwcpp::Location wp;
+            wp.lat = r.lat_1e7;
+            wp.lng = r.lng_1e7;
+            const fwcpp::math::Vector2f ne = home.get_distance_NE(wp);
+            m.loc = fwcpp::Location();
+            m.loc.offset(ne.x, ne.y);
+            // Frames: 0/5 absolute (rebased on the start alt), 3/6 relative.
+            const bool relative = (r.frame == 3) || (r.frame == 6);
+            const float up_m = relative ? r.z : (r.z - home_alt_m);
+            m.loc.set_alt_m(up_m, fwcpp::Location::AltFrame::ABSOLUTE);
+            if (count >= fwcpp::vehicle::kMaxMissionItems) {
+                return -1;
+            }
+            converted[count++] = m;
+        }
+        if (count == 0) {
+            return -1;
+        }
+        if (!plane_.mission.load(std::span<const fwcpp::vehicle::MissionItem>(converted.data(), count))) {
+            return -1;
+        }
+        observe_mission_base();
+        return static_cast<int>(count);
+    }
+
     void fill_state(StateReply& r) const {
         r.initialized = initialized_ ? 1 : 0;
-        r.mode = static_cast<std::uint8_t>(mode_);
+        r.mode = static_cast<std::uint8_t>(current_mode());
         r.on_ground = sim_.on_ground() ? 1 : 0;
         r.pos_ned_m[0] = sim_.position.x;
         r.pos_ned_m[1] = sim_.position.y;
@@ -523,15 +663,365 @@ private:
     std::size_t mission_base_size_ = 0;
 };
 
+// ===================== MAVLink GCS endpoint (--mavlink <port>) ==============
+//
+// A second, optional UDP socket a real ground station (QGroundControl /
+// Mission Planner / pymavlink) connects to. Outbound: HEARTBEAT (1 Hz wall),
+// ATTITUDE + GLOBAL_POSITION_INT + VFR_HUD (~10 Hz wall while the host steps
+// the sim). Inbound: COMMAND_LONG (arm/disarm 400, DO_SET_MODE 176, RTL 20,
+// TAKEOFF 22), PARAM_REQUEST_LIST/SET (minimal), and the full mission-upload
+// handshake (MISSION_COUNT -> MISSION_REQUEST_INT xN -> MISSION_ACK) plus
+// download of the last uploaded set. Wall-clock time paces ONLY this GCS
+// side — the sim itself stays host-stepped and deterministic. No GUIDED mode
+// exists in this port, so a GCS "fly to here" cannot work; upload a mission
+// and enter AUTO instead.
+
+namespace mavgcs {
+
+constexpr std::uint8_t kCompId = 1; // MAV_COMP_ID_AUTOPILOT1
+constexpr std::uint16_t kMaxUploadRows = 64;
+
+struct GcsLink {
+    sock_type sock{};
+    bool enabled = false;
+    // MAVLink SYSTEM id (--sysid): the multi-vehicle discriminator. One
+    // aircraft = one sysid; a GCS with several links tells them apart by
+    // this, never by compid (which distinguishes components WITHIN one
+    // aircraft — this bridge is always compid 1, AUTOPILOT1).
+    std::uint8_t sysid = 1;
+    bool has_peer = false;
+    sockaddr_in peer{};
+    std::uint8_t seq = 0;
+    std::chrono::steady_clock::time_point last_hb{};
+    std::chrono::steady_clock::time_point last_stream{};
+    // Upload session state + the last accepted geodetic mission (served back
+    // verbatim when the GCS re-downloads after an upload).
+    bool up_active = false;
+    std::uint16_t up_count = 0;
+    std::uint16_t up_next = 0;
+    std::array<Bridge::GcsGeoItem, kMaxUploadRows> rows{};
+    std::array<Bridge::GcsGeoItem, kMaxUploadRows> cached_rows{};
+    std::uint16_t cached_count = 0;
+};
+
+inline void send_frame(GcsLink& g, std::uint32_t msgid, const std::uint8_t* payload, std::size_t len) {
+    if (!g.enabled || !g.has_peer) {
+        return;
+    }
+    fwcpp::gcs::Frame f;
+    if (!fwcpp::gcs::make_frame(g.seq++, g.sysid, kCompId, msgid,
+                                std::span<const std::uint8_t>(payload, len), f)) {
+        return;
+    }
+    std::uint8_t buf[300];
+    const std::size_t n = fwcpp::gcs::encode_v2(f, buf);
+    if (n > 0) {
+        ::sendto(g.sock, reinterpret_cast<const char*>(buf), static_cast<int>(n), 0,
+                 reinterpret_cast<const sockaddr*>(&g.peer), sizeof(g.peer));
+    }
+}
+
+inline void send_heartbeat(GcsLink& g, const Bridge& b) {
+    std::uint8_t p[9] = {};
+    fwcpp::gcs::write_u32_le(p, Bridge::arduplane_custom_mode(b.current_mode()));
+    p[4] = 1; // MAV_TYPE_FIXED_WING
+    p[5] = 3; // MAV_AUTOPILOT_ARDUPILOTMEGA
+    p[6] = static_cast<std::uint8_t>(0x01 /*CUSTOM_MODE_ENABLED*/ | (b.is_armed() ? 0x80 : 0x00));
+    p[7] = 4; // MAV_STATE_ACTIVE
+    p[8] = 3; // mavlink_version
+    send_frame(g, fwcpp::gcs::kMsgIdHeartbeat, p, sizeof(p));
+}
+
+inline void send_attitude(GcsLink& g, const Bridge& b) {
+    float roll = 0.0f;
+    float pitch = 0.0f;
+    float yaw = 0.0f;
+    b.sim().dcm.to_euler(&roll, &pitch, &yaw);
+    std::uint8_t p[28] = {};
+    fwcpp::gcs::write_u32_le(p, b.sim_time_ms());
+    fwcpp::gcs::write_f32_le(p + 4, roll);
+    fwcpp::gcs::write_f32_le(p + 8, pitch);
+    fwcpp::gcs::write_f32_le(p + 12, yaw);
+    fwcpp::gcs::write_f32_le(p + 16, b.sim().gyro.x);
+    fwcpp::gcs::write_f32_le(p + 20, b.sim().gyro.y);
+    fwcpp::gcs::write_f32_le(p + 24, b.sim().gyro.z);
+    send_frame(g, fwcpp::gcs::kMsgIdAttitude, p, sizeof(p));
+}
+
+inline void send_global_position_int(GcsLink& g, const Bridge& b) {
+    const fwcpp::Location& loc = b.sim().get_location();
+    float roll = 0.0f;
+    float pitch = 0.0f;
+    float yaw = 0.0f;
+    b.sim().dcm.to_euler(&roll, &pitch, &yaw);
+    float hdg_deg = fwcpp::math::degrees(yaw);
+    if (hdg_deg < 0.0f) {
+        hdg_deg += 360.0f;
+    }
+    std::uint8_t p[28] = {};
+    fwcpp::gcs::write_u32_le(p, b.sim_time_ms());
+    fwcpp::gcs::write_i32_le(p + 4, loc.lat);
+    fwcpp::gcs::write_i32_le(p + 8, loc.lng);
+    fwcpp::gcs::write_i32_le(p + 12, loc.alt * 10);                                   // cm -> mm AMSL-ish
+    fwcpp::gcs::write_i32_le(p + 16, static_cast<std::int32_t>(-b.sim().position.z * 1000.0f)); // mm above start
+    fwcpp::gcs::write_u16_le(p + 20, static_cast<std::uint16_t>(
+        static_cast<std::int16_t>(b.sim().velocity_ef.x * 100.0f)));
+    fwcpp::gcs::write_u16_le(p + 22, static_cast<std::uint16_t>(
+        static_cast<std::int16_t>(b.sim().velocity_ef.y * 100.0f)));
+    fwcpp::gcs::write_u16_le(p + 24, static_cast<std::uint16_t>(
+        static_cast<std::int16_t>(b.sim().velocity_ef.z * 100.0f)));
+    fwcpp::gcs::write_u16_le(p + 26, static_cast<std::uint16_t>(hdg_deg * 100.0f));
+    send_frame(g, fwcpp::gcs::kMsgIdGlobalPositionInt, p, sizeof(p));
+}
+
+inline void send_vfr_hud(GcsLink& g, const Bridge& b) {
+    const auto& s = b.sim();
+    const float groundspeed = std::sqrt(s.velocity_ef.x * s.velocity_ef.x + s.velocity_ef.y * s.velocity_ef.y);
+    float roll = 0.0f;
+    float pitch = 0.0f;
+    float yaw = 0.0f;
+    s.dcm.to_euler(&roll, &pitch, &yaw);
+    float hdg_deg = fwcpp::math::degrees(yaw);
+    if (hdg_deg < 0.0f) {
+        hdg_deg += 360.0f;
+    }
+    const float throttle_pct =
+        b.plane().srv_channels.get_output_scaled(fwcpp::srv::Function::kThrottle);
+    std::uint8_t p[20] = {};
+    fwcpp::gcs::write_f32_le(p, s.airspeed);
+    fwcpp::gcs::write_f32_le(p + 4, groundspeed);
+    fwcpp::gcs::write_f32_le(p + 8, static_cast<float>(s.get_location().alt) * 0.01f);
+    fwcpp::gcs::write_f32_le(p + 12, -s.velocity_ef.z);
+    fwcpp::gcs::write_u16_le(p + 16, static_cast<std::uint16_t>(static_cast<std::int16_t>(hdg_deg)));
+    fwcpp::gcs::write_u16_le(p + 18, static_cast<std::uint16_t>(throttle_pct));
+    send_frame(g, fwcpp::gcs::kMsgIdVfrHud, p, sizeof(p));
+}
+
+inline void send_param_value(GcsLink& g, const char* name, float value,
+                             std::uint16_t count, std::uint16_t index) {
+    std::uint8_t p[25] = {};
+    fwcpp::gcs::write_f32_le(p, value);
+    fwcpp::gcs::write_u16_le(p + 4, count);
+    fwcpp::gcs::write_u16_le(p + 6, index);
+    std::strncpy(reinterpret_cast<char*>(p + 8), name, 16);
+    p[24] = 9; // MAV_PARAM_TYPE_REAL32
+    send_frame(g, fwcpp::gcs::kMsgIdParamValue, p, sizeof(p));
+}
+
+inline void send_mission_request_int(GcsLink& g, std::uint16_t seq) {
+    std::uint8_t p[5] = {};
+    fwcpp::gcs::write_u16_le(p, seq);
+    p[2] = 255; // to the GCS
+    p[3] = 0;
+    p[4] = 0; // MAV_MISSION_TYPE_MISSION
+    send_frame(g, fwcpp::gcs::kMsgIdMissionRequestInt, p, sizeof(p));
+}
+
+inline void send_mission_ack(GcsLink& g, std::uint8_t type) {
+    std::uint8_t p[4] = {};
+    p[0] = 255;
+    p[1] = 0;
+    p[2] = type; // MAV_MISSION_ACCEPTED = 0
+    p[3] = 0;
+    send_frame(g, fwcpp::gcs::kMsgIdMissionAck, p, sizeof(p));
+}
+
+inline void send_mission_count(GcsLink& g, std::uint16_t count) {
+    std::uint8_t p[5] = {};
+    fwcpp::gcs::write_u16_le(p, count);
+    p[2] = 255;
+    p[3] = 0;
+    p[4] = 0;
+    send_frame(g, fwcpp::gcs::kMsgIdMissionCount, p, sizeof(p));
+}
+
+inline void send_mission_item_int(GcsLink& g, const Bridge::GcsGeoItem& r) {
+    std::uint8_t p[38] = {};
+    fwcpp::gcs::write_f32_le(p, r.p1);
+    fwcpp::gcs::write_f32_le(p + 4, r.p2);
+    fwcpp::gcs::write_i32_le(p + 16, r.lat_1e7);
+    fwcpp::gcs::write_i32_le(p + 20, r.lng_1e7);
+    fwcpp::gcs::write_f32_le(p + 24, r.z);
+    fwcpp::gcs::write_u16_le(p + 28, r.seq);
+    fwcpp::gcs::write_u16_le(p + 30, r.command);
+    p[32] = 255;
+    p[33] = 0;
+    p[34] = r.frame;
+    p[35] = (r.seq == 0) ? 1 : 0; // current
+    p[36] = 1;                    // autocontinue
+    p[37] = 0;                    // mission_type
+    send_frame(g, fwcpp::gcs::kMsgIdMissionItemInt, p, sizeof(p));
+}
+
+inline void send_command_ack(GcsLink& g, std::uint16_t command, std::uint8_t result) {
+    std::uint8_t p[3] = {};
+    fwcpp::gcs::write_u16_le(p, command);
+    p[2] = result; // MAV_RESULT_ACCEPTED=0 / UNSUPPORTED=3 / FAILED=4
+    send_frame(g, fwcpp::gcs::kMsgIdCommandAck, p, sizeof(p));
+}
+
+inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f) {
+    using namespace fwcpp::gcs;
+    // Frame.payload is zero-initialized before the copy, so MAVLink v2
+    // trailing-zero payload truncation is transparently undone: reads past
+    // payload_len see zeros, exactly as the spec intends.
+    const std::uint8_t* p = f.payload.data();
+
+    switch (f.msgid) {
+    case kMsgIdHeartbeat:
+        break; // peer already learned from the datagram source
+
+    case kMsgIdParamRequestList:
+        // Minimal parameter surface: enough for a GCS to complete its sync.
+        send_param_value(g, "SYSID_THISMAV", static_cast<float>(g.sysid), 1, 0);
+        break;
+
+    case kMsgIdParamSet: {
+        // Accept-and-echo: no AP_Param storage is wired in this port, so a
+        // set is acknowledged (echoed back) but not persisted anywhere.
+        char name[17] = {};
+        std::memcpy(name, p + 6, 16);
+        send_param_value(g, name, read_f32_le(p), 1, 0);
+        break;
+    }
+
+    case kMsgIdCommandLong: {
+        const std::uint8_t target_sys = p[30];
+        if (target_sys != 0 && target_sys != g.sysid) {
+            break; // addressed to a different aircraft on a shared link
+        }
+        const std::uint16_t command = read_u16_le(p + 28);
+        const float p1 = read_f32_le(p);
+        const float p2 = read_f32_le(p + 4);
+        switch (command) {
+        case 400: // MAV_CMD_COMPONENT_ARM_DISARM
+            bridge.gcs_arm(p1 > 0.5f);
+            send_command_ack(g, command, 0);
+            break;
+        case 176: // MAV_CMD_DO_SET_MODE (param2 = custom mode)
+            send_command_ack(g, command,
+                bridge.gcs_set_mode_custom(static_cast<std::uint32_t>(p2)) ? 0 : 4);
+            break;
+        case 20: // MAV_CMD_NAV_RETURN_TO_LAUNCH
+            send_command_ack(g, command, bridge.gcs_set_mode_custom(11) ? 0 : 4);
+            break;
+        case 22: // MAV_CMD_NAV_TAKEOFF -> TAKEOFF mode
+            send_command_ack(g, command, bridge.gcs_set_mode_custom(13) ? 0 : 4);
+            break;
+        default:
+            send_command_ack(g, command, 3); // MAV_RESULT_UNSUPPORTED
+            break;
+        }
+        break;
+    }
+
+    case kMsgIdMissionCount: {
+        if (p[2] != 0 && p[2] != g.sysid) {
+            break; // target_system mismatch on a shared link
+        }
+        const std::uint16_t count = read_u16_le(p);
+        if (count == 0 || count > kMaxUploadRows) {
+            send_mission_ack(g, count == 0 ? 0 : 1 /*MAV_MISSION_ERROR*/);
+            g.up_active = false;
+            break;
+        }
+        g.up_active = true;
+        g.up_count = count;
+        g.up_next = 0;
+        send_mission_request_int(g, 0);
+        break;
+    }
+
+    case kMsgIdMissionItemInt: {
+        if (!g.up_active) {
+            break;
+        }
+        const std::uint16_t seq = read_u16_le(p + 28);
+        if (seq != g.up_next) {
+            send_mission_request_int(g, g.up_next); // re-request in order
+            break;
+        }
+        Bridge::GcsGeoItem& r = g.rows[seq];
+        r.seq = seq;
+        r.command = read_u16_le(p + 30);
+        r.frame = p[34];
+        r.p1 = read_f32_le(p);
+        r.p2 = read_f32_le(p + 4);
+        r.lat_1e7 = read_i32_le(p + 16);
+        r.lng_1e7 = read_i32_le(p + 20);
+        r.z = read_f32_le(p + 24);
+        ++g.up_next;
+        if (g.up_next < g.up_count) {
+            send_mission_request_int(g, g.up_next);
+            break;
+        }
+        // Complete — convert + load, cache for download, ack.
+        g.up_active = false;
+        const int loaded = bridge.gcs_mission_load(g.rows.data(), g.up_count);
+        if (loaded > 0) {
+            g.cached_rows = g.rows;
+            g.cached_count = g.up_count;
+            send_mission_ack(g, 0); // MAV_MISSION_ACCEPTED
+            std::printf("mavlink: mission upload accepted (%u rows, %d flyable)\n",
+                        static_cast<unsigned>(g.up_count), loaded);
+        } else {
+            send_mission_ack(g, 4); // MAV_MISSION_UNSUPPORTED
+        }
+        std::fflush(stdout);
+        break;
+    }
+
+    case kMsgIdMissionRequestList:
+        send_mission_count(g, g.cached_count);
+        break;
+
+    case kMsgIdMissionRequestInt: {
+        const std::uint16_t seq = read_u16_le(p);
+        if (seq < g.cached_count) {
+            send_mission_item_int(g, g.cached_rows[seq]);
+        }
+        break;
+    }
+
+    default:
+        break;
+    }
+}
+
+inline void handle_datagram(GcsLink& g, Bridge& bridge, const std::uint8_t* data, std::size_t len,
+                            const sockaddr_in& from) {
+    g.peer = from;
+    g.has_peer = true;
+    std::size_t off = 0;
+    while (off < len) {
+        const auto res = fwcpp::gcs::decode_v2(
+            std::span<const std::uint8_t>(data + off, len - off));
+        if (!res.has_value()) {
+            if (res.error() == fwcpp::gcs::DecodeError::kBadMagic) {
+                ++off; // resync
+                continue;
+            }
+            break; // truncated / bad crc — drop the rest of the datagram
+        }
+        const fwcpp::gcs::Frame& f = res.value();
+        handle_frame(g, bridge, f);
+        off += fwcpp::gcs::kHeaderLenV2 + f.payload_len + fwcpp::gcs::kCrcLen;
+    }
+}
+
+} // namespace mavgcs
+
 } // namespace
 
 int main(int argc, char** argv) {
     std::uint16_t port = kDefaultPort;
+    std::uint16_t mavlink_port = 0;   // 0 = GCS endpoint disabled
+    std::uint8_t mavlink_sysid = 1;   // MAVLink system id (per-aircraft discriminator)
     bool debug = false;
     if (argc > 1) {
         const int parsed = std::atoi(argv[1]);
         if (parsed <= 0 || parsed > 65535) {
-            std::fprintf(stderr, "usage: %s [udp_port] [--debug]\n", argv[0]);
+            std::fprintf(stderr, "usage: %s [udp_port] [--debug] [--mavlink <port>] [--sysid <1-255>]\n", argv[0]);
             return 1;
         }
         port = static_cast<std::uint16_t>(parsed);
@@ -539,6 +1029,16 @@ int main(int argc, char** argv) {
     for (int i = 2; i < argc; ++i) {
         if (std::strcmp(argv[i], "--debug") == 0) {
             debug = true;
+        } else if (std::strcmp(argv[i], "--mavlink") == 0 && i + 1 < argc) {
+            const int parsed = std::atoi(argv[++i]);
+            if (parsed > 0 && parsed <= 65535) {
+                mavlink_port = static_cast<std::uint16_t>(parsed);
+            }
+        } else if (std::strcmp(argv[i], "--sysid") == 0 && i + 1 < argc) {
+            const int parsed = std::atoi(argv[++i]);
+            if (parsed > 0 && parsed <= 255) {
+                mavlink_sysid = static_cast<std::uint8_t>(parsed);
+            }
         }
     }
 
@@ -569,15 +1069,83 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::printf("wopr_bridge: Plane+SimPlane+SitlHarness listening on 127.0.0.1:%u (lockstep, %.0fHz ticks)\n",
-                static_cast<unsigned>(port), 1.0f / kDt);
+    // Optional MAVLink GCS socket (loopback, like the host socket).
+    mavgcs::GcsLink gcs{};
+    gcs.sysid = mavlink_sysid;
+    if (mavlink_port != 0) {
+        gcs.sock = ::socket(AF_INET, SOCK_DGRAM, 0);
+        sockaddr_in gaddr{};
+        gaddr.sin_family = AF_INET;
+        gaddr.sin_port = htons(mavlink_port);
+        gaddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        if (::bind(gcs.sock, reinterpret_cast<const sockaddr*>(&gaddr), sizeof(gaddr)) != 0) {
+            std::fprintf(stderr, "bind mavlink 127.0.0.1:%u failed — GCS endpoint disabled\n",
+                         static_cast<unsigned>(mavlink_port));
+        } else {
+            gcs.enabled = true;
+        }
+    }
+
+    std::printf("wopr_bridge: Plane+SimPlane+SitlHarness listening on 127.0.0.1:%u (lockstep, %.0fHz ticks)%s%u\n",
+                static_cast<unsigned>(port), 1.0f / kDt,
+                gcs.enabled ? "; MAVLink GCS on 127.0.0.1:" : "; MAVLink GCS disabled, port ",
+                static_cast<unsigned>(mavlink_port));
     std::fflush(stdout);
 
     Bridge bridge;
     bridge.set_debug(debug);
     std::uint8_t buf[2048];
 
+    auto now_wall = std::chrono::steady_clock::now();
+    gcs.last_hb = now_wall - std::chrono::seconds(2);
+    gcs.last_stream = now_wall;
+
     for (;;) {
+        // Wait on the host socket (+ the GCS socket when enabled) with a
+        // 100 ms cap so wall-clock GCS pacing keeps running while the host
+        // is idle. Sim time itself remains host-stepped and deterministic.
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(sock, &readfds);
+        if (gcs.enabled) {
+            FD_SET(gcs.sock, &readfds);
+        }
+#ifdef _WIN32
+        const int nfds = 0; // ignored on Windows
+#else
+        const int nfds = static_cast<int>(std::max<sock_type>(sock, gcs.enabled ? gcs.sock : sock)) + 1;
+#endif
+        timeval tv{};
+        tv.tv_sec = 0;
+        tv.tv_usec = 100000;
+        const int ready = ::select(nfds, &readfds, nullptr, nullptr, &tv);
+
+        now_wall = std::chrono::steady_clock::now();
+        if (gcs.enabled && bridge.is_initialized() &&
+            now_wall - gcs.last_hb >= std::chrono::seconds(1)) {
+            gcs.last_hb = now_wall;
+            mavgcs::send_heartbeat(gcs, bridge);
+        }
+
+        if (ready <= 0) {
+            continue;
+        }
+
+        // GCS traffic first — it never advances sim time.
+        if (gcs.enabled && FD_ISSET(gcs.sock, &readfds)) {
+            sockaddr_in gfrom{};
+            socklen_type gfrom_len = sizeof(gfrom);
+            const int grecv = static_cast<int>(::recvfrom(gcs.sock, reinterpret_cast<char*>(buf), sizeof(buf), 0,
+                                                          reinterpret_cast<sockaddr*>(&gfrom), &gfrom_len));
+            if (grecv > 0) {
+                mavgcs::handle_datagram(gcs, bridge, buf, static_cast<std::size_t>(grecv), gfrom);
+            }
+        }
+
+        if (!FD_ISSET(sock, &readfds)) {
+            continue;
+        }
+
         sockaddr_in from{};
         socklen_type from_len = sizeof(from);
         const int received = static_cast<int>(::recvfrom(sock, reinterpret_cast<char*>(buf), sizeof(buf), 0,
@@ -661,5 +1229,15 @@ int main(int argc, char** argv) {
         bridge.fill_state(reply);
         ::sendto(sock, reinterpret_cast<const char*>(&reply), sizeof(reply), 0,
                  reinterpret_cast<const sockaddr*>(&from), from_len);
+
+        // GCS telemetry stream, throttled by wall clock (~10 Hz while the
+        // host is stepping the sim; silent while the sim is paused).
+        if (gcs.enabled && bridge.is_initialized() &&
+            now_wall - gcs.last_stream >= std::chrono::milliseconds(100)) {
+            gcs.last_stream = now_wall;
+            mavgcs::send_attitude(gcs, bridge);
+            mavgcs::send_global_position_int(gcs, bridge);
+            mavgcs::send_vfr_hud(gcs, bridge);
+        }
     }
 }

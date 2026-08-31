@@ -28,6 +28,15 @@ inline constexpr std::uint32_t kMsgIdMissionRequestInt = 51;
 inline constexpr std::uint32_t kMsgIdMissionItemInt = 73;
 inline constexpr std::uint32_t kMsgIdCommandLong = 76;
 inline constexpr std::uint32_t kMsgIdCommandAck = 77;
+// WOPR-BRIDGE additions (2026-08-31): the GCS-facing message set a live
+// ground station needs beyond the original slice — position for the map,
+// HUD basics, and the two mission-protocol messages that complete an
+// upload/download handshake. CRC extras from the same pinned common.xml
+// source the block below cites; verified live against pymavlink.
+inline constexpr std::uint32_t kMsgIdGlobalPositionInt = 33;
+inline constexpr std::uint32_t kMsgIdMissionRequestList = 43;
+inline constexpr std::uint32_t kMsgIdMissionAck = 47;
+inline constexpr std::uint32_t kMsgIdVfrHud = 74;
 
 // CRC extras from same-tree lua (libraries/AP_Scripting/modules/MAVLink)
 // where present, else pymavlink message_checksum / generated headers of
@@ -48,6 +57,12 @@ inline constexpr std::uint8_t kMissionRequestIntCrcExtra = 196;
 inline constexpr std::uint8_t kMissionItemIntCrcExtra = 38;
 inline constexpr std::uint8_t kCommandLongCrcExtra = 152;
 inline constexpr std::uint8_t kCommandAckCrcExtra = 143;
+// GLOBAL_POSITION_INT = 104 msgid 33; MISSION_REQUEST_LIST = 132 msgid 43;
+// MISSION_ACK = 153 msgid 47; VFR_HUD = 20 msgid 74.
+inline constexpr std::uint8_t kGlobalPositionIntCrcExtra = 104;
+inline constexpr std::uint8_t kMissionRequestListCrcExtra = 132;
+inline constexpr std::uint8_t kMissionAckCrcExtra = 153;
+inline constexpr std::uint8_t kVfrHudCrcExtra = 20;
 
 struct Frame {
     std::uint8_t seq{};
@@ -147,6 +162,22 @@ enum class DecodeError : std::uint8_t {
     }
     if (msgid == kMsgIdMissionItemInt) {
         extra = kMissionItemIntCrcExtra;
+        return true;
+    }
+    if (msgid == kMsgIdGlobalPositionInt) {
+        extra = kGlobalPositionIntCrcExtra;
+        return true;
+    }
+    if (msgid == kMsgIdMissionRequestList) {
+        extra = kMissionRequestListCrcExtra;
+        return true;
+    }
+    if (msgid == kMsgIdMissionAck) {
+        extra = kMissionAckCrcExtra;
+        return true;
+    }
+    if (msgid == kMsgIdVfrHud) {
+        extra = kVfrHudCrcExtra;
         return true;
     }
     return false;

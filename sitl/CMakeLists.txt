@@ -25,7 +25,7 @@ target_link_libraries(quadplane_sitl_run PRIVATE ap-sim)
 # be spawned by a host process without the llvm-mingw runtime DLLs
 # (libc++.dll/libunwind.dll/libwinpthread-1.dll) on PATH.
 add_executable(wopr_bridge wopr_bridge.cpp)
-target_link_libraries(wopr_bridge PRIVATE ap-hal-sitl)
+target_link_libraries(wopr_bridge PRIVATE ap-hal-sitl ap-gcs)
 if(WIN32)
     target_link_libraries(wopr_bridge PRIVATE ws2_32)
     target_link_options(wopr_bridge PRIVATE -static)
