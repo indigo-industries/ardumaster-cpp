@@ -53,8 +53,28 @@ target_compile_options(fwcpp_upstream_flags INTERFACE
     -fno-math-errno
 )
 
+# Native Windows builds: expose POSIX bits the Linux SITL host provides
+# (<strings.h>, M_PI). No-op on Linux.
+if(WIN32)
+    target_include_directories(fwcpp_upstream_flags INTERFACE
+        ${CMAKE_SOURCE_DIR}/cmake/win-compat)
+    target_compile_definitions(fwcpp_upstream_flags INTERFACE
+        _USE_MATH_DEFINES
+        _CRT_SECURE_NO_WARNINGS)
+    # Header-only consumers of sitl/ (and modules that don't link the
+    # INTERFACE flags) still need the compat include path.
+    include_directories(${CMAKE_SOURCE_DIR}/cmake/win-compat)
+    add_compile_definitions(_USE_MATH_DEFINES _CRT_SECURE_NO_WARNINGS)
+endif()
+
 enable_testing()
 
+# Catch2 is a system package on the Linux port host. Allow SITL-only builds
+# on machines that have a C++ toolchain but no Catch2 (e.g. Windows).
+option(FWCPP_BUILD_TESTS "Build Catch2 unit/parity tests" ON)
+
 add_subdirectory(modules)
-add_subdirectory(tests)
+if(FWCPP_BUILD_TESTS)
+    add_subdirectory(tests)
+endif()
 add_subdirectory(sitl)

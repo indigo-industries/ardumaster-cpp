@@ -724,6 +724,52 @@ public:
     [[nodiscard]] float get_max_climbrate() const { return gains_.max_climb_rate; }
     [[nodiscard]] float get_max_sinkrate() const { return gains_.max_sink_rate; }
 
+    // WOPR-BRIDGE accessor (2026-08-30, default-preserving): gains_ is
+    // construction-time state and this port has no AP_Param write path wired
+    // to it, so an embedding host configuring a non-default airframe
+    // (CLMB_MAX / SINK_MIN / SINK_MAX for a jet instead of the 2 kg-foamie
+    // defaults) needs direct access to the live gains. No internal caller
+    // uses this; behavior is unchanged unless a host writes through it.
+    [[nodiscard]] Gains& mutable_gains() { return gains_; }
+
+    // WOPR-BRIDGE accessor (2026-08-30, same rationale as mutable_gains):
+    // aparm_ is a BY-VALUE COPY taken at construction, so a host that
+    // reconfigures the vehicle's own FixedWingTunables after construction
+    // (JSON airframe models) must mirror the airspeed envelope into this
+    // copy or TECS keeps constraining tas_dem to the 9-22 m/s foamie
+    // defaults forever (measured: a 140 m/s cruise demand clamped to 17).
+    [[nodiscard]] FixedWingParams& mutable_aparm() { return aparm_; }
+
+    // WOPR-BRIDGE debug snapshot (read-only, no behavior change): the
+    // internal demand-shaping state needed to diagnose height/airspeed
+    // tracking at non-default airframe scales from outside the class.
+    struct DebugState {
+        float hgt_dem_in = 0.0f;       // raw demanded height this tick (m)
+        float hgt_dem_rate_ltd = 0.0f; // after the climb/sink slew limiter
+        float hgt_dem = 0.0f;          // final lagged height demand
+        float hgt_rate_dem = 0.0f;     // demanded height rate (m/s)
+        float max_climb_scaler = 0.0f;
+        float max_sink_scaler = 0.0f;
+        float tas_dem_adj = 0.0f;      // demanded TAS after limits (m/s)
+        float pitch_dem_unc = 0.0f;    // unconstrained pitch demand (rad)
+        float throttle_dem = 0.0f;
+        int thr_clip = 0;              // ClipStatus: 0 none, min/max otherwise
+    };
+    [[nodiscard]] DebugState debug_state() const {
+        DebugState d;
+        d.hgt_dem_in = hgt_dem_in_;
+        d.hgt_dem_rate_ltd = hgt_dem_rate_ltd_;
+        d.hgt_dem = hgt_dem_;
+        d.hgt_rate_dem = hgt_rate_dem_;
+        d.max_climb_scaler = max_climb_scaler_;
+        d.max_sink_scaler = max_sink_scaler_;
+        d.tas_dem_adj = tas_dem_adj_;
+        d.pitch_dem_unc = pitch_dem_unc_;
+        d.throttle_dem = throttle_dem_;
+        d.thr_clip = static_cast<int>(thr_clip_status_);
+        return d;
+    }
+
     // upstream: AP_TECS::get_land_sinkrate() (AP_TECS.h) - `return
     // _land_sink;`. CPP-040 ported the underlying LAND_SINK field
     // (Gains::land_sink) but left this public accessor unported, noting

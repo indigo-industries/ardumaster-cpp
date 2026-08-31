@@ -832,6 +832,20 @@ public:
         const math::Vector3f force = getForce(mixed.aileron, mixed.elevator, mixed.rudder, angle_of_attack, beta, airspeed, gyro, air_density);
         math::Vector3f rot_accel = getTorque(mixed.aileron, mixed.elevator, mixed.rudder, mixed.throttle, force, angle_of_attack, airspeed, beta, gyro, air_density);
 
+        // DELIBERATE, DEFAULT-PRESERVING DIVERGENCE (WOPR bridge, 2026-08-30):
+        // upstream Plane::calculate_forces uses getTorque()'s raw aerodynamic
+        // MOMENT (N*m) directly as rot_accel (rad/s^2) - an implicit 1 kg*m^2
+        // inertia on every axis. Tolerable for the 2 kg skywalker default;
+        // catastrophically wrong for a JSON-loaded heavy airframe, whose
+        // moments scale with qbar*S*b (~1000x) while the implicit inertia
+        // stays 1 (observed: instant ground tumble on a 65 t model). The
+        // default {1,1,1} reproduces upstream bit-identically; a model file
+        // supplies its real per-axis inertia (kg*m^2) via the WOPR bridge's
+        // "moment_inertia" key.
+        rot_accel.x /= std::fmax(moment_inertia.x, 1.0e-6f);
+        rot_accel.y /= std::fmax(moment_inertia.y, 1.0e-6f);
+        rot_accel.z /= std::fmax(moment_inertia.z, 1.0e-6f);
+
         // scale thrust to newtons - upstream: thrust_scale = (mass *
         // GRAVITY_MSS) / hover_throttle, computed once in Plane::Plane();
         // computed per-call here since mass/hover_throttle are plain public
@@ -843,9 +857,14 @@ public:
         accel_body = accel_body / mass;
 
         if (on_ground()) {
-            // add some ground friction
+            // add some ground friction — upstream's constant 0.3f, promoted to
+            // a field for the same default-preserving reason as moment_inertia:
+            // a speed-proportional 0.3/s drag equilibrates the ground roll at
+            // thrust_accel/0.3 m/s, which for a realistic T/W (0.2-0.25) is
+            // ~7 m/s — below any real rotate speed. Wheeled JSON models set a
+            // rolling-resistance-scale value (~0.02) via "ground_friction".
             const math::Vector3f vel_body = dcm.transposed() * velocity_ef;
-            accel_body.x -= vel_body.x * 0.3f;
+            accel_body.x -= vel_body.x * ground_friction;
         }
 
         update_dynamics(rot_accel, dt);
@@ -1016,6 +1035,13 @@ public:
     // (Aircraft::mass, 2.0f), Plane::hover_throttle (const 0.7f).
     Coefficients coefficient;
     float hover_throttle;
+    // Per-axis moment of inertia (kg*m^2) dividing getTorque()'s moment into
+    // rot_accel. {1,1,1} = upstream's own implicit-unit-inertia behavior,
+    // bit-identical - see the update() divergence note.
+    math::Vector3f moment_inertia{1.0f, 1.0f, 1.0f};
+    // Speed-proportional ground drag (1/s). 0.3f = upstream's own constant,
+    // bit-identical - see the on_ground() note in update().
+    float ground_friction = 0.3f;
     std::uniform_real_distribution<float> airspeed_noise_dist_{-1.0f, 1.0f};
     WindConfig wind_config;
     FrameConfig frame_config;
