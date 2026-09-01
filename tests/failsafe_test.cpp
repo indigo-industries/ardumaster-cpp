@@ -84,7 +84,7 @@ TEST_CASE("leftover_do_failsafe_action None sets dispatcher flag only",
     REQUIRE_FALSE(fx.notify_failsafe_mode_change);
 }
 
-TEST_CASE("leftover_do_failsafe_action Land → land_with_pause flag",
+TEST_CASE("leftover_do_failsafe_action Land -> land_with_pause flag",
           "[copter][failsafe]") {
     FailsafeEffects fx{};
     leftover_do_failsafe_action(FailsafeAction::Land, fx);
@@ -94,7 +94,7 @@ TEST_CASE("leftover_do_failsafe_action Land → land_with_pause flag",
     REQUIRE_FALSE(fx.leftover_set_mode_rtl_or_land);
 }
 
-TEST_CASE("leftover_do_failsafe_action Rtl → rtl_or_land flag",
+TEST_CASE("leftover_do_failsafe_action Rtl -> rtl_or_land flag",
           "[copter][failsafe]") {
     FailsafeEffects fx{};
     leftover_do_failsafe_action(FailsafeAction::Rtl, fx);
@@ -104,7 +104,7 @@ TEST_CASE("leftover_do_failsafe_action Rtl → rtl_or_land flag",
     REQUIRE_FALSE(fx.leftover_set_mode_land_with_pause);
 }
 
-TEST_CASE("leftover_do_failsafe_action SmartRtl → smart_rtl_or_rtl flag",
+TEST_CASE("leftover_do_failsafe_action SmartRtl -> smart_rtl_or_rtl flag",
           "[copter][failsafe]") {
     FailsafeEffects fx{};
     leftover_do_failsafe_action(FailsafeAction::SmartRtl, fx);
@@ -113,7 +113,7 @@ TEST_CASE("leftover_do_failsafe_action SmartRtl → smart_rtl_or_rtl flag",
     REQUIRE(fx.notify_failsafe_mode_change);
 }
 
-TEST_CASE("leftover_do_failsafe_action SmartRtlLand → smart_rtl_or_land flag",
+TEST_CASE("leftover_do_failsafe_action SmartRtlLand -> smart_rtl_or_land flag",
           "[copter][failsafe]") {
     FailsafeEffects fx{};
     leftover_do_failsafe_action(FailsafeAction::SmartRtlLand, fx);
@@ -122,7 +122,7 @@ TEST_CASE("leftover_do_failsafe_action SmartRtlLand → smart_rtl_or_land flag",
     REQUIRE(fx.notify_failsafe_mode_change);
 }
 
-TEST_CASE("leftover_do_failsafe_action Terminate → terminate flag",
+TEST_CASE("leftover_do_failsafe_action Terminate -> terminate flag",
           "[copter][failsafe]") {
     FailsafeEffects fx{};
     leftover_do_failsafe_action(FailsafeAction::Terminate, fx);
@@ -132,7 +132,7 @@ TEST_CASE("leftover_do_failsafe_action Terminate → terminate flag",
     REQUIRE_FALSE(fx.leftover_set_mode_rtl_or_land);
 }
 
-TEST_CASE("leftover_do_failsafe_action AutoDoLandStart → auto_do_land_start flag",
+TEST_CASE("leftover_do_failsafe_action AutoDoLandStart -> auto_do_land_start flag",
           "[copter][failsafe]") {
     FailsafeEffects fx{};
     leftover_do_failsafe_action(FailsafeAction::AutoDoLandStart, fx);
@@ -141,7 +141,7 @@ TEST_CASE("leftover_do_failsafe_action AutoDoLandStart → auto_do_land_start fl
     REQUIRE(fx.notify_failsafe_mode_change);
 }
 
-TEST_CASE("leftover_do_failsafe_action BrakeLand → brake_or_land flag",
+TEST_CASE("leftover_do_failsafe_action BrakeLand -> brake_or_land flag",
           "[copter][failsafe]") {
     FailsafeEffects fx{};
     leftover_do_failsafe_action(FailsafeAction::BrakeLand, fx);
@@ -150,7 +150,7 @@ TEST_CASE("leftover_do_failsafe_action BrakeLand → brake_or_land flag",
     REQUIRE(fx.notify_failsafe_mode_change);
 }
 
-TEST_CASE("leftover_failsafe_radio_on_event Disabled → None (no mode flags)",
+TEST_CASE("leftover_failsafe_radio_on_event Disabled -> None (no mode flags)",
           "[copter][failsafe]") {
     FailsafeEffects fx{};
     REQUIRE(leftover_failsafe_radio_on_event(FsThrEnable::Disabled, fx) ==
@@ -160,7 +160,7 @@ TEST_CASE("leftover_failsafe_radio_on_event Disabled → None (no mode flags)",
     REQUIRE_FALSE(fx.notify_failsafe_mode_change);
 }
 
-TEST_CASE("leftover_failsafe_radio_on_event AlwaysRtl → Rtl + rtl_or_land",
+TEST_CASE("leftover_failsafe_radio_on_event AlwaysRtl -> Rtl + rtl_or_land",
           "[copter][failsafe]") {
     FailsafeEffects fx{};
     REQUIRE(leftover_failsafe_radio_on_event(FsThrEnable::AlwaysRtl, fx) ==
@@ -170,7 +170,7 @@ TEST_CASE("leftover_failsafe_radio_on_event AlwaysRtl → Rtl + rtl_or_land",
     REQUIRE(fx.notify_failsafe_mode_change);
 }
 
-TEST_CASE("leftover_failsafe_radio_on_event ContinueMission → Rtl + rtl_or_land",
+TEST_CASE("leftover_failsafe_radio_on_event ContinueMission -> Rtl + rtl_or_land",
           "[copter][failsafe]") {
     FailsafeEffects fx{};
     REQUIRE(leftover_failsafe_radio_on_event(FsThrEnable::ContinueMission, fx) ==
@@ -179,7 +179,7 @@ TEST_CASE("leftover_failsafe_radio_on_event ContinueMission → Rtl + rtl_or_lan
     REQUIRE(fx.leftover_set_mode_rtl_or_land);
 }
 
-TEST_CASE("leftover_failsafe_radio_on_event AlwaysLand → Land + land_with_pause",
+TEST_CASE("leftover_failsafe_radio_on_event AlwaysLand -> Land + land_with_pause",
           "[copter][failsafe]") {
     FailsafeEffects fx{};
     REQUIRE(leftover_failsafe_radio_on_event(FsThrEnable::AlwaysLand, fx) ==
@@ -189,7 +189,7 @@ TEST_CASE("leftover_failsafe_radio_on_event AlwaysLand → Land + land_with_paus
     REQUIRE(fx.notify_failsafe_mode_change);
 }
 
-TEST_CASE("leftover_failsafe_radio_on_event AlwaysSmartRtlOrRtl → SmartRtl flags",
+TEST_CASE("leftover_failsafe_radio_on_event AlwaysSmartRtlOrRtl -> SmartRtl flags",
           "[copter][failsafe]") {
     FailsafeEffects fx{};
     REQUIRE(leftover_failsafe_radio_on_event(FsThrEnable::AlwaysSmartRtlOrRtl, fx) ==
@@ -199,7 +199,7 @@ TEST_CASE("leftover_failsafe_radio_on_event AlwaysSmartRtlOrRtl → SmartRtl fla
     REQUIRE(fx.notify_failsafe_mode_change);
 }
 
-TEST_CASE("leftover_failsafe_radio_on_event AlwaysSmartRtlOrLand → SmartRtlLand flags",
+TEST_CASE("leftover_failsafe_radio_on_event AlwaysSmartRtlOrLand -> SmartRtlLand flags",
           "[copter][failsafe]") {
     FailsafeEffects fx{};
     REQUIRE(leftover_failsafe_radio_on_event(FsThrEnable::AlwaysSmartRtlOrLand, fx) ==
@@ -208,7 +208,7 @@ TEST_CASE("leftover_failsafe_radio_on_event AlwaysSmartRtlOrLand → SmartRtlLan
     REQUIRE(fx.leftover_set_mode_smart_rtl_or_land);
 }
 
-TEST_CASE("leftover_failsafe_radio_on_event AutoRtlOrRtl → AutoDoLandStart flags",
+TEST_CASE("leftover_failsafe_radio_on_event AutoRtlOrRtl -> AutoDoLandStart flags",
           "[copter][failsafe]") {
     FailsafeEffects fx{};
     REQUIRE(leftover_failsafe_radio_on_event(FsThrEnable::AutoRtlOrRtl, fx) ==
@@ -217,7 +217,7 @@ TEST_CASE("leftover_failsafe_radio_on_event AutoRtlOrRtl → AutoDoLandStart fla
     REQUIRE(fx.leftover_set_mode_auto_do_land_start_or_rtl);
 }
 
-TEST_CASE("leftover_failsafe_radio_on_event BrakeOrLand → BrakeLand flags",
+TEST_CASE("leftover_failsafe_radio_on_event BrakeOrLand -> BrakeLand flags",
           "[copter][failsafe]") {
     FailsafeEffects fx{};
     REQUIRE(leftover_failsafe_radio_on_event(FsThrEnable::BrakeOrLand, fx) ==
@@ -227,7 +227,7 @@ TEST_CASE("leftover_failsafe_radio_on_event BrakeOrLand → BrakeLand flags",
     REQUIRE(fx.notify_failsafe_mode_change);
 }
 
-TEST_CASE("leftover_failsafe_radio_on_event unknown FS_THR → Land flags",
+TEST_CASE("leftover_failsafe_radio_on_event unknown FS_THR -> Land flags",
           "[copter][failsafe]") {
     FailsafeEffects fx{};
     REQUIRE(leftover_failsafe_radio_on_event(static_cast<FsThrEnable>(255), fx) ==
@@ -262,7 +262,7 @@ TEST_CASE("leftover_failsafe_gcs_check armed without gcs inject is quiet",
     REQUIRE_FALSE(fx.gcs_announce_gcs_failsafe);
 }
 
-TEST_CASE("leftover_failsafe_gcs_check armed + gcs inject → do_failsafe_action RTL",
+TEST_CASE("leftover_failsafe_gcs_check armed + gcs inject -> do_failsafe_action RTL",
           "[copter][failsafe]") {
     FailsafeInputs in{};
     in.motors_armed = true;

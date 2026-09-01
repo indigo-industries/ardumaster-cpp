@@ -63,7 +63,11 @@ inline void GPS_NMEA::publish(const GPS_Data* d) {
     struct timeval tv {};
     simulation_timeval(&tv);
     struct tm tvd {};
-    struct tm* tm = gmtime_r(&tv.tv_sec, &tvd);
+    // tv_sec is time_t on Linux but a 32-bit long on Windows, so it cannot be
+    // passed as time_t* directly. Copy through a time_t local -- correct on
+    // both platforms and no #ifdef needed.
+    const time_t tv_secs = static_cast<time_t>(tv.tv_sec);
+    struct tm* tm = gmtime_r(&tv_secs, &tvd);
     char tstring[20];
     char dstring[20];
     char lat_string[20];

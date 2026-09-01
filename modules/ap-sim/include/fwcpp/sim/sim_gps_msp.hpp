@@ -68,7 +68,11 @@ inline void GPS_MSP::publish(const GPS_Data* d) {
     struct timeval tv {};
     simulation_timeval(&tv);
     struct tm tvd {};
-    auto* tm = gmtime_r(&tv.tv_sec, &tvd);
+    // tv_sec is time_t on Linux but a 32-bit long on Windows, so it cannot be
+    // passed as time_t* directly. Copy through a time_t local -- correct on
+    // both platforms and no #ifdef needed.
+    const time_t tv_secs = static_cast<time_t>(tv.tv_sec);
+    auto* tm = gmtime_r(&tv_secs, &tvd);
     msp_gps.gps_week = t.week;
     msp_gps.ms_tow = t.ms;
     msp_gps.fix_type = d->have_lock ? 3 : 0;

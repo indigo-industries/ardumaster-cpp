@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -28,9 +29,20 @@ static float f32_from_bits(const std::string& s) {
 }
 
 static std::vector<std::vector<std::string>> fixture_rows(const char* section) {
-    const std::string path = "/srv/ardumaster/ports/ardumaster-rust/fixtures/pos_control_ne.csv";
+    // Shared parity data lives in the SEPARATE ardumaster-rust repo, which may
+    // not be checked out beside this one. Location comes from CMake
+    // (FWCPP_RUST_FIXTURES_DIR, default ../ardumaster-rust/fixtures) and can be
+    // redirected at run time by the same-named env var; SKIP rather than fail
+    // when it is absent, so a cpp-only checkout still gets a green suite.
+    std::string dir = FWCPP_RUST_FIXTURES_DIR;
+    if (const char* env = std::getenv("FWCPP_RUST_FIXTURES_DIR")) {
+        dir = env;
+    }
+    const std::string path = dir + "/pos_control_ne.csv";
     std::ifstream in(path);
-    REQUIRE(in.good());
+    if (!in.good()) {
+        SKIP("ardumaster-rust fixture not found: " + path);
+    }
     std::vector<std::vector<std::string>> rows;
     std::string current;
     std::string line;
