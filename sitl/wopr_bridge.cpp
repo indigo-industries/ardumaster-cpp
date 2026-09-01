@@ -382,6 +382,16 @@ public:
         start.alt = static_cast<std::int32_t>(p.alt_m * 100.0f);
         plant.set_start_location(start, p.yaw_deg);
 
+        // Give both harnesses the start point's AMSL elevation, so their
+        // ahrs::get_eas2tas_above_origin() estimate works in real altitudes
+        // rather than treating the field as sea level. WOPR sends the true
+        // ground elevation in InitPayload::alt_m; without this a KPHX takeoff
+        // (~338 m) would compute eas2tas as if it were on the coast, and the
+        // error grows with field elevation -- ~4% missing at 1 km, which lands
+        // straight on every TECS airspeed demand.
+        harness_.set_origin_amsl_m(p.alt_m);
+        qharness_.set_origin_amsl_m(p.alt_m);
+
         // Upstream Plane sets GROUND_BEHAVIOR_FWD_ONLY (SIM_Plane.cpp:50);
         // the port's SimPlane defaults kNone for its own tests. The bridge
         // restores upstream's choice — upright, forward-only ground contact

@@ -31,6 +31,7 @@
 #include <fwcpp/hal_sitl/sitl_harness.hpp>
 #include <fwcpp/math/scalar.hpp>
 #include <fwcpp/math/vector3.hpp>
+#include <fwcpp/ahrs/ahrs_atmosphere.hpp>
 #include <fwcpp/sim/sim_plane.hpp>
 #include <fwcpp/vehicle/mode.hpp>
 #include <fwcpp/vehicle/plane.hpp>
@@ -98,12 +99,6 @@ TEST_CASE("SitlHarness::step() is behavior-preserving relative to a hand-rolled 
         // own file banner for the citation behind each line below.
         StabilizeInputs in;
         in.dt = kDt;
-        // Mirror SitlHarness::step()'s own eas2tas wiring. This hand-rolled
-        // equivalent exists to prove the harness is behaviour-preserving, so
-        // anything the harness feeds StabilizeInputs has to be fed here too --
-        // otherwise this test fails for the trivial reason that the two are no
-        // longer the same experiment.
-        in.eas2tas = manual_sim.eas2tas;
         in.now_ms = now_ms;
         in.now_us = static_cast<std::uint64_t>(now_ms) * 1000ULL;
 
@@ -131,6 +126,11 @@ TEST_CASE("SitlHarness::step() is behavior-preserving relative to a hand-rolled 
         in.gps_use_enabled = true;
         in.position_ned = manual_sim.position;
         in.current_altitude_m = -manual_sim.position.z;
+        // Mirror SitlHarness::step()'s eas2tas estimate. Must sit AFTER
+        // current_altitude_m, which is its input -- the harness orders it that
+        // way for the same reason. Default origin AMSL (0) matches the
+        // harness under test, which has no set_origin_amsl_m() call here.
+        in.eas2tas = fwcpp::ahrs::get_eas2tas_above_origin(in.current_altitude_m, 0.0f);
 
         tick(manual_plane, gyro_sample, in);
 

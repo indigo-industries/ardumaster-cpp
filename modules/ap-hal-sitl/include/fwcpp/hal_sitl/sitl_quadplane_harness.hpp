@@ -21,6 +21,7 @@
 #include <fwcpp/quadplane/quadplane_update.hpp>
 #include <fwcpp/sim/sim_quadplane.hpp>
 #include <fwcpp/vehicle/mode.hpp>
+#include <fwcpp/ahrs/ahrs_atmosphere.hpp>
 #include <fwcpp/vehicle/plane.hpp>
 
 namespace fwcpp::hal_sitl {
@@ -79,22 +80,6 @@ public:
               float vtol_roll_dem_rad = 0.0f, float vtol_pitch_dem_rad = 0.0f) {
         vehicle::StabilizeInputs in;
         in.dt = dt;
-        // EAS -> TAS conversion factor for TECS / L1 / roll / pitch. Upstream
-        // takes this from ahrs.get_EAS2TAS(), which derives it from baro
-        // altitude and temperature; this port has no atmosphere model in the
-        // AHRS, so the harness supplies the PLANT's own factor -- SITL truth,
-        // exactly as it already supplies true gyro/accel/velocity here.
-        //
-        // Left at the 1.0 default until now, which silently pinned every
-        // airspeed demand to sea level: TECS computes tas_dem_ = eas_dem_ *
-        // eas2tas_ and tas_max_ = airspeed_max * eas2tas_, so a climbing
-        // aircraft was being given EAS demands as if they were TAS. Harmless
-        // while SimPlane's own eas2tas was frozen at 1.0 (it did not refresh
-        // Location, so air density never varied); once that was fixed the
-        // plant and the controller disagreed about which airspeed they meant.
-        // A real vehicle would estimate this from baro rather than read it
-        // off the plant -- that remains the honest gap here.
-        in.eas2tas = sim_.eas2tas;
         in.now_ms = now_ms;
         in.now_us = static_cast<std::uint64_t>(now_ms) * 1000ULL;
 
@@ -117,6 +102,23 @@ public:
         in.gps_use_enabled = true;
         in.position_ned = sim_.position;
         in.current_altitude_m = -sim_.position.z;
+        // EAS -> TAS for TECS / L1 / roll / pitch. Upstream this is
+        // ahrs.get_EAS2TAS(); here it is ahrs::get_eas2tas_above_origin(),
+        // derived from the vehicle's OWN altitude signal through the same
+        // 1976 atmosphere model AP_Baro uses.
+        //
+        // Deliberately NOT sim_plane_.eas2tas. That field is the plant's
+        // internal conversion -- simulator truth the vehicle could not know --
+        // and reading it put the airspeed convention on the wrong side of the
+        // sensor boundary. See ahrs_atmosphere.hpp for what this still does
+        // not model (no barometer, so no pressure/temperature measurement and
+        // no sensor noise/bias/lag).
+        //
+        // Left at the 1.0 default before this existed, which pinned every
+        // airspeed demand to sea level: TECS computes tas_dem_ = eas_dem_ *
+        // eas2tas_, so a climbing aircraft was handed EAS demands as if they
+        // were TAS.
+        in.eas2tas = ahrs::get_eas2tas_above_origin(in.current_altitude_m, origin_amsl_m_);
 
         vehicle::tick(plane_, gyro_sample, in);
 
@@ -166,7 +168,17 @@ public:
     [[nodiscard]] const q_modes::QHoverRunResult& last_qhover() const { return last_qhover_; }
     [[nodiscard]] const sim::SitlInput& last_input() const { return last_input_; }
 
+    /** AMSL elevation of the vehicle's fixed start point, so
+     *  current_altitude_m (which is above THAT point, not AMSL) can be
+     *  turned into the AMSL altitude the atmosphere model needs.
+     *  Upstream a barometer is calibrated at boot and reports AMSL
+     *  directly; this is the equivalent one-time survey figure. Default
+     *  0 keeps every existing caller at sea level, i.e. eas2tas ~ 1. */
+    void set_origin_amsl_m(float amsl_m) { origin_amsl_m_ = amsl_m; }
+    [[nodiscard]] float origin_amsl_m() const { return origin_amsl_m_; }
+
 private:
+    float origin_amsl_m_ = 0.0f;
     vehicle::Plane& plane_;
     quadplane::QuadPlane& quadplane_;
     sim::SimQuadPlane& sim_;
