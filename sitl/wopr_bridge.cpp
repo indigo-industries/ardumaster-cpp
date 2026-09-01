@@ -712,6 +712,35 @@ public:
         // sink_max into the ground — measured).
         plane_.set_target_altitude_current(static_cast<std::int32_t>(-active_sim().position.z * 100.0f));
         }
+
+        // FBWB/CRUISE also take their AIRSPEED demand from the throttle stick,
+        // not from a fixed cruise speed -- plane.hpp's update_fbwb_speed_height()
+        // maps it linearly onto [airspeed_min, airspeed_max] (that file's own
+        // "SURPRISING UPSTREAM FINDING #2"). Same situation as the altitude
+        // seed directly above: the mode's enter() cannot know what the caller
+        // wants, and this bridge is the caller.
+        //
+        // Without this the stick sat where set_neutral_sticks() left it -- 1100,
+        // commented "throttle low (auto-throttle modes ignore it)", which is
+        // true of AUTO and false of exactly these two modes. The result was a
+        // silent minimum-airspeed cruise: measured on ga-light (min 26,
+        // cruise 55), `mode {cruise}` settled at 25.5-25.8 m/s with no
+        // indication why. That is faithful ArduPlane behaviour for an idle
+        // throttle stick, but it is not what an operator asking for "cruise"
+        // means, and nothing in the reply said otherwise.
+        //
+        // Seed the stick at the model's own cruise airspeed. A later
+        // vehicle.fw.sitl.rc overrides it, exactly like the altitude seed.
+        if (requested == BridgeMode::kFbwb || requested == BridgeMode::kCruise) {
+            const float span = plane_.aparm.airspeed_max - plane_.aparm.airspeed_min;
+            float frac = 0.0f;
+            if (span > 0.0f) {
+                frac = (plane_.aparm.airspeed_cruise - plane_.aparm.airspeed_min) / span;
+                frac = fwcpp::math::constrain_value(frac, 0.0f, 1.0f);
+            }
+            rc_pwm_[2] = static_cast<std::uint16_t>(1100.0f + frac * 800.0f);
+            apply_sticks();
+        }
         if (!plane_.set_mode(*target)) {
             return Status::kModeRefused;
         }
@@ -956,7 +985,11 @@ private:
     void set_neutral_sticks() {
         rc_pwm_[0] = 1500; // roll
         rc_pwm_[1] = 1500; // pitch
-        rc_pwm_[2] = 1100; // throttle low (auto-throttle modes ignore it)
+        // Throttle low. AUTO/RTL/LOITER genuinely ignore this (auto-throttle),
+        // but FBWB and CRUISE do NOT -- they map the stick onto the airspeed
+        // demand, so 1100 there means 'fly at airspeed_min'. set_mode() seeds
+        // those two at the model's cruise instead; see the comment there.
+        rc_pwm_[2] = 1100;
         rc_pwm_[3] = 1500; // rudder
         apply_sticks();
     }
