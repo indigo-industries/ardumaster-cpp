@@ -16,7 +16,7 @@ MODE = struct.Struct("<B")
 ARM = struct.Struct("<B")
 MHDR = struct.Struct("<HH")
 MITEM = struct.Struct("<B3x5f")
-REPLY = struct.Struct("<I4BI18fHHIBB2x")
+REPLY = struct.Struct("<I4BI20fHHIBB2x")
 
 
 def run_case(port, model_path, mission, sim_seconds, label):
@@ -36,8 +36,9 @@ def run_case(port, model_path, mission, sim_seconds, label):
         return {
             "status": r[2], "mode": r[3], "on_ground": r[4],
             "pos": r[6:9], "rpy": r[12:15], "airspeed": r[18], "hagl": r[19],
-            "servo": r[20:24], "wp": r[24], "wpn": r[25], "sim_ms": r[26],
-            "armed": r[27], "init": r[28],
+            "servo": r[20:24], "vtol_lift": r[24], "vtol_hover": r[25],
+            "wp": r[26], "wpn": r[27], "sim_ms": r[28],
+            "armed": r[29], "init": r[30],
         }
 
     try:
