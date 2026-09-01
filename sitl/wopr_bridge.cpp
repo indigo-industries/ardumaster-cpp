@@ -642,6 +642,38 @@ public:
                 }
             }
             harness_.step(now_ms_, kDt);
+            // Refresh the plant's geodetic Location from the freshly
+            // integrated NED position. SimPlane::update() is the one plant
+            // that does NOT do this in its own epilogue (every sibling --
+            // SimMulticopter, SimQuadPlane, SimRover, ... -- ends with
+            // update_dynamics / time_advance / update_position /
+            // update_mag_field_bf), and SitlHarness does not either, because
+            // the fixed-wing CONTROL path never reads location: the harness
+            // feeds the controller from NED state and the compass from
+            // rotate_earth_field_to_body(dcm).
+            //
+            // Two consumers DO read it, and both were wrong for an entire
+            // flight while it stayed pinned at the start fix:
+            //   - GLOBAL_POSITION_INT below reports location.lat/lng, so a
+            //     connected GCS drew the aircraft parked at its takeoff point
+            //     while the HUD animated. Measured against WOPR: lat/lon
+            //     byte-identical across 1.5 km of flight while relative_alt
+            //     (derived separately from position.z) tracked correctly.
+            //   - Aircraft::update_dynamics recomputes eas2tas and air_density
+            //     from location.alt, so density was frozen at the takeoff
+            //     altitude however high the aircraft climbed.
+            //
+            // Fixed here rather than in SimPlane::update() ON PURPOSE. Adding
+            // it there is arguably the more correct fix -- it matches the
+            // siblings and upstream -- but it changes plant physics for every
+            // consumer, and doing so shifts six ekf_closed_loop_test baselines
+            // that pin previously-measured numbers (e.g. max_horiz_pos_err_m
+            // Approx(0.1295) becomes 0.274, wind_err_mag 1.43 vs a < 1.0
+            // bound). Those are the port's own regression baselines and
+            // re-measuring them is a call for whoever owns that effort, not a
+            // side effect of a bridge bug fix. This call is confined to the
+            // bridge's own step loop and leaves the port's suite untouched.
+            sim_.update_position();
             if (debug_ && (now_ms_ % 5000u) == 0u) {
                 const fwcpp::tecs::Tecs::DebugState d = plane_.tecs.debug_state();
                 std::printf("TECSDBG t=%.1f h=%.1f hdem_in=%.1f hdem_ltd=%.1f hdem=%.1f hrate=%.2f "
