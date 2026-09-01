@@ -31,6 +31,8 @@
 #include <fwcpp/hal_sitl/sitl_harness.hpp>
 #include <fwcpp/math/scalar.hpp>
 #include <fwcpp/math/vector3.hpp>
+#include <fwcpp/baro/baro.hpp>
+#include <fwcpp/sim/sim_baro.hpp>
 #include <fwcpp/ahrs/ahrs_atmosphere.hpp>
 #include <fwcpp/sim/sim_plane.hpp>
 #include <fwcpp/vehicle/mode.hpp>
@@ -126,11 +128,16 @@ TEST_CASE("SitlHarness::step() is behavior-preserving relative to a hand-rolled 
         in.gps_use_enabled = true;
         in.position_ned = manual_sim.position;
         in.current_altitude_m = -manual_sim.position.z;
-        // Mirror SitlHarness::step()'s eas2tas estimate. Must sit AFTER
-        // current_altitude_m, which is its input -- the harness orders it that
-        // way for the same reason. Default origin AMSL (0) matches the
-        // harness under test, which has no set_origin_amsl_m() call here.
-        in.eas2tas = fwcpp::ahrs::get_eas2tas_above_origin(in.current_altitude_m, 0.0f);
+        // Mirror SitlHarness::step()'s baro feed. eas2tas is no longer set
+        // here at all -- tick() derives it inside plane.baro from this
+        // pressure/temperature pair, so mirroring the SENSOR input is what
+        // keeps the two the same experiment.
+        {
+            const fwcpp::sim::SitlBaroSample baro = fwcpp::sim::sitl_baro_from_aircraft(manual_sim);
+            in.baro_pressure_pa = baro.pressure_pa;
+            in.baro_temperature_c = baro.temperature_k - fwcpp::baro::kCtoKelvin;
+            in.baro_sensor_enabled = true;
+        }
 
         tick(manual_plane, gyro_sample, in);
 

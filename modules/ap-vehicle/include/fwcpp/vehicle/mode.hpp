@@ -999,6 +999,22 @@ inline void tick(Plane& plane, const ahrs::GyroSample& gyro_sample, StabilizeInp
         in.airspeed_valid = plane.airspeed_sensor.healthy();
         in.airspeed_eas = plane.airspeed_sensor.airspeed();
     }
+
+    // BARO -> eas2tas. Upstream this is ahrs.get_EAS2TAS() delegating to
+    // AP_Baro::get_EAS2TAS(); here plane.baro does the same arithmetic from
+    // MEASURED pressure against its calibrated ground reference. Gated the
+    // same way as the airspeed sensor directly above, for the same reason: a
+    // caller that sets in.eas2tas itself (the fw_control / l1_control tests,
+    // which have no baro at all) must not have it silently overwritten.
+    if (in.baro_sensor_enabled) {
+        plane.baro.update(in.baro_pressure_pa, in.baro_temperature_c, in.now_ms);
+        if (plane.baro.healthy()) {
+            in.eas2tas = plane.baro.get_eas2tas();
+        }
+    }
+    // else: leave in.eas2tas exactly as the caller set it - plane.baro is
+    // never touched, so a caller with no barometer keeps whatever convention
+    // it was already using (1.0 by default = "true == equivalent airspeed").
     // else: leave airspeed_valid/airspeed_eas exactly as the caller set
     // them - plane.airspeed_sensor is never even touched, so a caller
     // that never sets airspeed_sensor_enabled gets bit-for-bit this

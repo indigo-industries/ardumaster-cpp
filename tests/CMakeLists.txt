@@ -362,6 +362,10 @@ add_executable(airspeed_sensor_test airspeed_sensor_test.cpp)
 target_link_libraries(airspeed_sensor_test PRIVATE ap-airspeed Catch2::Catch2WithMain)
 catch_discover_tests(airspeed_sensor_test)
 
+add_executable(baro_test baro_test.cpp)
+target_link_libraries(baro_test PRIVATE ap-baro ap-common Catch2::Catch2WithMain)
+catch_discover_tests(baro_test)
+
 add_executable(steer_controller_test steer_controller_test.cpp)
 target_link_libraries(steer_controller_test PRIVATE ap-steer-control Catch2::Catch2WithMain)
 catch_discover_tests(steer_controller_test)

@@ -165,6 +165,8 @@
 #include <fwcpp/math/vector3.hpp>
 #include <fwcpp/sim/sim_plane.hpp>
 #include <fwcpp/vehicle/mode.hpp>
+#include <fwcpp/baro/baro.hpp>
+#include <fwcpp/sim/sim_baro.hpp>
 #include <fwcpp/ahrs/ahrs_atmosphere.hpp>
 #include <fwcpp/vehicle/plane.hpp>
 
@@ -237,23 +239,22 @@ public:
         // for the exact convention this reproduces (plane.hpp file banner).
         in.position_ned = sim_plane_.position;
         in.current_altitude_m = -sim_plane_.position.z;
-        // EAS -> TAS for TECS / L1 / roll / pitch. Upstream this is
-        // ahrs.get_EAS2TAS(); here it is ahrs::get_eas2tas_above_origin(),
-        // derived from the vehicle's OWN altitude signal through the same
-        // 1976 atmosphere model AP_Baro uses.
+        // BARO. Feed the plant's pressure/temperature through plane.baro and
+        // let tick() derive eas2tas from the MEASURED pressure against the
+        // barometer's own calibrated ground reference (mode.hpp). This retires
+        // the ahrs_atmosphere.hpp standard-day estimate that stood in for a
+        // barometer until ap-baro existed -- and with it the last place the
+        // vehicle read a conversion factor straight off the plant.
         //
-        // Deliberately NOT sim_plane_.eas2tas. That field is the plant's
-        // internal conversion -- simulator truth the vehicle could not know --
-        // and reading it put the airspeed convention on the wrong side of the
-        // sensor boundary. See ahrs_atmosphere.hpp for what this still does
-        // not model (no barometer, so no pressure/temperature measurement and
-        // no sensor noise/bias/lag).
-        //
-        // Left at the 1.0 default before this existed, which pinned every
-        // airspeed demand to sea level: TECS computes tas_dem_ = eas_dem_ *
-        // eas2tas_, so a climbing aircraft was handed EAS demands as if they
-        // were TAS.
-        in.eas2tas = ahrs::get_eas2tas_above_origin(in.current_altitude_m, origin_amsl_m_);
+        // sitl_baro_from_aircraft() reads aircraft.location.alt, which is only
+        // correct because SimPlane::update() now refreshes Location; before
+        // that fix this sample was frozen at the start altitude too.
+        {
+            const sim::SitlBaroSample baro = sim::sitl_baro_from_aircraft(sim_plane_);
+            in.baro_pressure_pa = baro.pressure_pa;
+            in.baro_temperature_c = baro.temperature_k - baro::kCtoKelvin;
+            in.baro_sensor_enabled = true;
+        }
 
         vehicle::tick(plane_, gyro_sample, in);
 

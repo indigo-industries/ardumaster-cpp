@@ -2966,6 +2966,7 @@
 
 #include <fwcpp/ahrs/ahrs_dcm.hpp>
 #include <fwcpp/airspeed/airspeed_sensor.hpp>
+#include <fwcpp/baro/baro.hpp>
 #include <fwcpp/compass/compass.hpp>
 #include <fwcpp/fw_control/fw_controller.hpp>
 #include <fwcpp/fw_control/pitch_controller.hpp>
@@ -3667,6 +3668,15 @@ struct StabilizeInputs {
     // "airspeed_valid/airspeed_eas" for the first time.
     float airspeed_raw_pressure_pa = 0.0f; // raw differential pressure, Pa - meaningful only if airspeed_sensor_enabled.
     bool airspeed_sensor_enabled = false;  // whether to feed airspeed_raw_pressure_pa through plane.airspeed_sensor this tick - see above.
+
+    // BARO (see modules/ap-baro). Same opt-in shape as the airspeed pair above,
+    // and for the same reason: a caller that sets eas2tas directly (every
+    // fw_control / l1_control test does) must not have it overwritten by a
+    // sensor it never fed. Leave baro_sensor_enabled false and eas2tas is
+    // passed through untouched.
+    float baro_pressure_pa = 0.0f;      // absolute static pressure, Pa - meaningful only if baro_sensor_enabled.
+    float baro_temperature_c = 15.0f;   // static air temperature, degC - meaningful only if baro_sensor_enabled.
+    bool baro_sensor_enabled = false;   // whether to feed the pair above through plane.baro this tick.
 };
 
 // upstream: this port's own bound on mission length, NOT upstream's - see
@@ -4913,6 +4923,15 @@ public:
     // compass_healthy is true this tick - see that field's own doc comment
     // below for why.
     compass::Compass compass;
+
+    // The barometer (see modules/ap-baro's own file banner). Supplies
+    // get_eas2tas() from MEASURED pressure against a calibrated ground
+    // reference, which is what finally retires the standard-day
+    // ahrs_atmosphere.hpp estimate for the airspeed conversion. tick()
+    // (mode.hpp) only calls baro.update() when StabilizeInputs::
+    // baro_sensor_enabled is true this tick, exactly as it gates
+    // airspeed_sensor and compass.
+    baro::Baro baro;
 
     // CPP-082 (see modules/ap-airspeed's own file banner) - this port's
     // first real airspeed sensor model, default-constructed to upstream's
