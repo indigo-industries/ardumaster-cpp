@@ -366,6 +366,10 @@ add_executable(baro_test baro_test.cpp)
 target_link_libraries(baro_test PRIVATE ap-baro ap-common Catch2::Catch2WithMain)
 catch_discover_tests(baro_test)
 
+add_executable(sim_baro_model_test sim_baro_model_test.cpp)
+target_link_libraries(sim_baro_model_test PRIVATE ap-sim Catch2::Catch2WithMain)
+catch_discover_tests(sim_baro_model_test)
+
 add_executable(steer_controller_test steer_controller_test.cpp)
 target_link_libraries(steer_controller_test PRIVATE ap-steer-control Catch2::Catch2WithMain)
 catch_discover_tests(steer_controller_test)

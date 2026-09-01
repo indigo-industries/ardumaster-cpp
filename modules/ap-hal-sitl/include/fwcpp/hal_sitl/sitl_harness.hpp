@@ -250,10 +250,23 @@ public:
         // correct because SimPlane::update() now refreshes Location; before
         // that fix this sample was frozen at the start altitude too.
         {
-            const sim::SitlBaroSample baro = sim::sitl_baro_from_aircraft(sim_plane_);
-            in.baro_pressure_pa = baro.pressure_pa;
-            in.baro_temperature_c = baro.temperature_k - baro::kCtoKelvin;
-            in.baro_sensor_enabled = true;
+            sim::SitlBaroSample baro;
+            // Through the SENSOR MODEL, not straight off the aircraft: noise,
+            // drift, glitch, bias and transport lag all live in baro_model_
+            // (sim_baro.hpp), which is where upstream keeps them too. It
+            // defaults to zero error, so this is byte-identical to the direct
+            // read until someone dials error in.
+            //
+            // A false return means the sensor produced NOTHING this tick --
+            // disabled, or a configured lag not yet filled. Leave
+            // baro_sensor_enabled false in that case so tick() does not feed
+            // plane.baro; the barometer then simply goes stale, which is what
+            // a real one does, rather than being handed a fabricated reading.
+            if (baro_model_.update(sim_plane_, now_ms, baro)) {
+                in.baro_pressure_pa = baro.pressure_pa;
+                in.baro_temperature_c = baro.temperature_k - baro::kCtoKelvin;
+                in.baro_sensor_enabled = true;
+            }
         }
 
         vehicle::tick(plane_, gyro_sample, in);
@@ -279,8 +292,14 @@ public:
     void set_origin_amsl_m(float amsl_m) { origin_amsl_m_ = amsl_m; }
     [[nodiscard]] float origin_amsl_m() const { return origin_amsl_m_; }
 
+    /** The barometer sensor model. Public so a caller can dial in noise/
+     *  drift/lag or call apply_upstream_defaults(); zero error by default so
+     *  existing behaviour and determinism are unchanged. */
+    [[nodiscard]] sim::SitlBaro& baro_model() { return baro_model_; }
+
 private:
     float origin_amsl_m_ = 0.0f;
+    sim::SitlBaro baro_model_{};
     vehicle::Plane& plane_;
     sim::SimPlane& sim_plane_;
 };

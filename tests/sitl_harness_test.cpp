@@ -27,6 +27,7 @@
 #include <cstdint>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 #include <fwcpp/ahrs/ahrs_dcm.hpp>
 #include <fwcpp/hal_sitl/sitl_harness.hpp>
 #include <fwcpp/math/scalar.hpp>
@@ -270,4 +271,74 @@ TEST_CASE("SitlHarness::step() defaults to zero injected gyro bias, and a caller
     REQUIRE(std::fabs(observed_delta.x - bias.x) < kTol);
     REQUIRE(std::fabs(observed_delta.y - bias.y) < kTol);
     REQUIRE(std::fabs(observed_delta.z - bias.z) < kTol);
+}
+
+// ---------------------------------------------------------------------------
+// Integration seam: harness baro model -> StabilizeInputs -> plane.baro.
+//
+// The model's own behaviour is covered in sim_baro_model_test.cpp and the
+// barometer's arithmetic in baro_test.cpp. Neither proves they are actually
+// CONNECTED -- the harness populates in.baro_* and tick() feeds plane.baro,
+// and a broken seam there would leave both suites green while the vehicle flew
+// on a barometer nobody was updating. Injecting a bias and watching it arrive
+// at the far end is the cheapest thing that catches that.
+// ---------------------------------------------------------------------------
+TEST_CASE("a bias dialled into the harness baro model reaches plane.baro", "[sitl_harness][baro]") {
+    // TWO harnesses stepped identically, differing only in the injected bias.
+    //
+    // Not one harness with a hand-set sim.location.alt: step() runs the plant,
+    // and SimPlane::update() recomputes location from its NED position, so a
+    // hand-set altitude is overwritten on the first step. (That overwrite is
+    // itself the update_position() fix earlier in this branch -- before it,
+    // location never moved and a test like this would have "worked" for the
+    // wrong reason.) Two plants from the same deterministic seed evolve
+    // identically, so any difference at the far end is the bias and nothing else.
+    fwcpp::vehicle::Plane plane_clean;
+    fwcpp::sim::SimPlane sim_clean;
+    fwcpp::hal_sitl::SitlHarness clean(plane_clean, sim_clean);
+
+    fwcpp::vehicle::Plane plane_biased;
+    fwcpp::sim::SimPlane sim_biased;
+    fwcpp::hal_sitl::SitlHarness biased(plane_biased, sim_biased);
+    biased.baro_model().bias_m = 50.0f;   // reads 50 m high => LOWER pressure
+
+    for (std::uint32_t t = 0; t <= 100; t += 20) {
+        clean.step(t, 0.02f);
+        biased.step(t, 0.02f);
+    }
+
+    REQUIRE(plane_clean.baro.healthy());
+    REQUIRE(plane_biased.baro.healthy());
+    INFO("clean " << plane_clean.baro.get_pressure() << " Pa vs biased "
+         << plane_biased.baro.get_pressure() << " Pa");
+    REQUIRE(plane_biased.baro.get_pressure() < plane_clean.baro.get_pressure());
+
+    // Both calibrated on their own first reading, so the bias is baked into
+    // each one's zero and altitude still reads near zero -- the bias is a
+    // pressure offset, not an altitude the vehicle can see. Asserting that
+    // explicitly, because it is the non-obvious half.
+    INFO("clean alt " << plane_clean.baro.get_altitude()
+         << " m, biased alt " << plane_biased.baro.get_altitude() << " m");
+    REQUIRE(plane_biased.baro.get_altitude() ==
+            Catch::Approx(plane_clean.baro.get_altitude()).margin(1.0f));
+}
+
+TEST_CASE("a disabled harness baro model stops updating plane.baro", "[sitl_harness][baro]") {
+    fwcpp::vehicle::Plane plane;
+    fwcpp::sim::SimPlane sim;
+    fwcpp::hal_sitl::SitlHarness harness(plane, sim);
+
+    harness.step(0, 0.02f);
+    REQUIRE(plane.baro.healthy());
+    const std::uint32_t last = plane.baro.last_update_ms();
+
+    // With the sensor dead the harness must leave baro_sensor_enabled false, so
+    // tick() never calls baro.update() and the reading goes stale rather than
+    // silently tracking an aircraft the sensor can no longer see.
+    harness.baro_model().disabled = true;
+    // The plant keeps flying underneath it; a live baro would follow.
+    for (std::uint32_t t = 20; t <= 200; t += 20) {
+        harness.step(t, 0.02f);
+    }
+    REQUIRE(plane.baro.last_update_ms() == last);
 }
