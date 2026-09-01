@@ -976,6 +976,25 @@ public:
         }
 
         update_dynamics(rot_accel, dt);
+        // Refresh the geodetic Location from the freshly integrated NED
+        // position. Every sibling plant ends its update() with this same
+        // epilogue slot (SimMulticopter / SimQuadPlane / SimRover / ... :
+        // update_dynamics, time_advance, update_position, update_mag_field_bf)
+        // and so do upstream's Aircraft subclasses; SimPlane was the one that
+        // omitted it. Ordered AFTER update_dynamics to match them exactly, so
+        // the density used by step N is the position at the end of step N-1.
+        //
+        // It went unnoticed because nothing in the fixed-wing CONTROL path
+        // reads location -- SitlHarness feeds the controller from NED state
+        // and the compass from rotate_earth_field_to_body(dcm). Two consumers
+        // do read it and were wrong for an entire flight while it stayed
+        // pinned at the start fix:
+        //   - Aircraft::update_dynamics recomputes eas2tas and air_density
+        //     from location.alt, so air density was frozen at the takeoff
+        //     altitude however high the aircraft climbed;
+        //   - wopr_bridge's MAVLink GLOBAL_POSITION_INT reports location.lat/
+        //     lng, so a connected GCS drew the aircraft parked on the runway.
+        update_position();
     }
 
     // CPP-093: this override now fully delegates to the base class.

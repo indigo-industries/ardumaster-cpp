@@ -124,6 +124,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <sstream>
 #include <vector>
 
 #include <catch2/catch_approx.hpp>
@@ -834,7 +835,7 @@ ClosedLoopComparison run_closed_loop_comparison(bool use_buffered_gps = false, b
             if (tick_index % kAirspeedPeriodTicks == kTasPushOffsetTicks[tas_jitter_slot]) {
                 fwcpp::ekf::TasSample tas;
                 tas.set_time_s(now_s + kTasSubTickJitterS[tas_jitter_slot]);
-                tas.true_airspeed_m_s = static_cast<fwcpp::ekf::ftype>(sim_plane.airspeed);
+                tas.true_airspeed_m_s = static_cast<fwcpp::ekf::ftype>(sim_plane.true_airspeed());
                 fused.push_tas_sample(tas);
             }
 
@@ -848,7 +849,7 @@ ClosedLoopComparison run_closed_loop_comparison(bool use_buffered_gps = false, b
             // unfused: airspeed fusion is never called at all - pure
             // prediction, same as the non-buffered path below.
         } else if (tick_index % kAirspeedPeriodTicks == 0) {
-            const fwcpp::ekf::ftype true_airspeed_m_s = static_cast<fwcpp::ekf::ftype>(sim_plane.airspeed);
+            const fwcpp::ekf::ftype true_airspeed_m_s = static_cast<fwcpp::ekf::ftype>(sim_plane.true_airspeed());
             ++result.n_airspeed_attempts;
             if (fused.fuse_airspeed(true_airspeed_m_s, kDtEkf)) {
                 ++result.n_airspeed_fused_count;
@@ -1183,7 +1184,7 @@ GpsDelayedHorizonResult run_gps_delayed_horizon_comparison() {
             fused.fuse_baro_height(-static_cast<fwcpp::ekf::ftype>(sim_plane.position.z), kDtEkf, now_s);
         }
         if (tick_index % kAirspeedPeriodTicks == 0) {
-            fused.fuse_airspeed(static_cast<fwcpp::ekf::ftype>(sim_plane.airspeed), kDtEkf);
+            fused.fuse_airspeed(static_cast<fwcpp::ekf::ftype>(sim_plane.true_airspeed()), kDtEkf);
         }
 
         // --- Metrics: compared against DELAYED truth (see METHODOLOGY
@@ -1263,7 +1264,7 @@ TEST_CASE("EkfCore closed-loop pipeline (mechanization + GPS fusion + magnetomet
     // drift" test already demonstrates in isolation). Measured max
     // (pre-CPP-063, GPS+mag+baro only): 0.133m / 0.233 m/s. RE-MEASURED
     // this ticket (CPP-063) after adding airspeed fusion's own always-active
-    // velocity correction to the same pipeline: 0.1295m / 0.2324 m/s - a
+    // velocity correction to the same pipeline: 0.1506m / 0.2324 m/s - a
     // real, small (~3%) shift from the added velocity correction, still
     // comfortably inside the same bound; not re-widened.
     REQUIRE(r.fused.max_horiz_pos_err_m < 1.0);
@@ -1423,11 +1424,11 @@ TEST_CASE("CPP-067: closed-loop GPS fusion via the new push_gps_sample()/recall_
     // THE REAL COMPARISON (per the ticket's own instruction: "confirm
     // accuracy is unaffected (or, if it changes, report the real numbers
     // honestly)") - MEASURED, in this test's own verification run:
-    //   direct-fed:  max horiz pos err = 0.1295m, max vert pos err =
+    //   direct-fed:  max horiz pos err = 0.1506m, max vert pos err =
     //                0.1224m, max vel err = 0.2324 m/s, max att err =
     //                0.5487deg  (identical to the main pipeline TEST_CASE
     //                above, as expected - same seed, same profile).
-    //   buffered:    max horiz pos err = 0.5420m, max vert pos err =
+    //   buffered:    max horiz pos err = 0.5881m, max vert pos err =
     //                0.1642m, max vel err = 0.2310 m/s, max att err =
     //                0.4730deg.
     // HONEST FINDING, NOT HIDDEN: accuracy is genuinely NOT unchanged.
@@ -1477,7 +1478,7 @@ TEST_CASE("CPP-067: closed-loop GPS fusion via the new push_gps_sample()/recall_
 // sample within its 100ms tolerance window" semantics - NOT necessarily
 // the exact query-time sample - large enough, at this profile's own real
 // turn/climb speeds, to plausibly explain the ~0.4m gap between the
-// ~0.13m direct-fed baseline and the ~0.54-0.55m buffered result that
+// ~0.15m direct-fed baseline and the ~0.59m buffered result that
 // neither CPP-067 nor CPP-072's delayed-state fix recovered?
 //
 // MEASURED RESULT (this ticket's own real, honest answer - see the
@@ -1491,7 +1492,7 @@ TEST_CASE("CPP-067: closed-loop GPS fusion via the new push_gps_sample()/recall_
 // arithmetic the ticket asks for - staleness_seconds * this profile's own
 // real turn/climb ground speed (26.8 m/s) - predicts 0.298-0.483m of
 // position error (mean- to max-staleness range), which brackets the
-// actual observed 0.413m unrecovered gap closely. YES, this plausibly
+// actual observed 0.438m unrecovered gap closely. YES, this plausibly
 // explains the gap - see the commit message for the named follow-up fix.
 // ============================================================================
 TEST_CASE("CPP-074: measuring GPS recall-window staleness as the real error source behind CPP-067/072's "
@@ -1504,8 +1505,25 @@ TEST_CASE("CPP-074: measuring GPS recall-window staleness as the real error sour
     const ClosedLoopComparison direct = run_closed_loop_comparison(false);
     const ClosedLoopComparison buffered = run_closed_loop_comparison(true);
 
-    REQUIRE(direct.fused.max_horiz_pos_err_m == Catch::Approx(0.1295).margin(0.005));
-    REQUIRE(buffered.fused.max_horiz_pos_err_m == Catch::Approx(0.5420).margin(0.005));
+    // RE-MEASURED (was 0.1295) when SimPlane::update() gained the
+    // update_position() call every other plant already had, which finally lets
+    // eas2tas / air_density vary with altitude instead of being pinned at the
+    // takeoff value. The trajectory therefore differs slightly and this
+    // maximum moves with it: 0.1295 -> 0.1506 m, bit-identical across runs.
+    // The `buffered` figure below moves too (0.5420 -> 0.5881), so the gap
+    // this TEST_CASE exists to explain moves 0.413 -> 0.438 m; the staleness
+    // bounds at the end of the case still bracket it.
+    //
+    // NOT the whole story of that plant change: it also exposed a latent bug
+    // HERE, where this file fed sim_plane.airspeed (EQUIVALENT airspeed --
+    // update_eas_airspeed() divides by eas2tas) into EkfCore::fuse_airspeed(),
+    // which its own contract documents as taking TRUE airspeed. Harmless while
+    // eas2tas was stuck at 1.0, wrong above sea level. Fixed by feeding
+    // sim_plane.true_airspeed(); before that fix this same figure read 0.274 m
+    // and wind estimation plateaued ~23% under the true wind. If this number
+    // moves again, check the EAS/TAS convention at the fusion call sites first.
+    REQUIRE(direct.fused.max_horiz_pos_err_m == Catch::Approx(0.1506).margin(0.005));
+    REQUIRE(buffered.fused.max_horiz_pos_err_m == Catch::Approx(0.5881).margin(0.005));
     const double observed_gap_m = buffered.fused.max_horiz_pos_err_m - direct.fused.max_horiz_pos_err_m;
 
     const auto& log = buffered.gps_recall_staleness_log;
@@ -1645,26 +1663,26 @@ TEST_CASE("CPP-074: measuring GPS recall-window staleness as the real error sour
     //   AGGREGATE arithmetic below is still the right test of the real
     //   question, even though the instantaneous correlation is flat.
     //
-    //   max turn/climb horizontal ground speed = 26.814 m/s (phase 2/3,
+    //   max turn/climb horizontal ground speed = 28.631 m/s (phase 2/3,
     //   real SimPlane dynamics - faster than the 18 m/s cruise airspeed
     //   because of phase 3's extra climb throttle).
-    //   predicted error from MEAN staleness * that speed  = 0.298m
-    //   predicted error from MAX staleness * that speed   = 0.483m
-    //   OBSERVED unrecovered gap (b - a)                  = 0.413m
+    //   predicted error from MEAN staleness * that speed  = 0.318m
+    //   predicted error from MAX staleness * that speed   = 0.516m
+    //   OBSERVED unrecovered gap (b - a)                  = 0.438m
     // The observed gap falls BETWEEN the mean- and max-staleness
     // predictions - a real, honest, order-of-magnitude match. See this
     // ticket's commit message for the full conclusion/recommendation.
     REQUIRE(mean_staleness_s == Catch::Approx(0.01111).margin(0.0005));
     REQUIRE(max_staleness_s == Catch::Approx(0.01801).margin(0.0005));
-    REQUIRE(max_turn_climb_speed_mps == Catch::Approx(26.814).margin(0.05));
-    REQUIRE(predicted_err_from_mean_staleness_m == Catch::Approx(0.298).margin(0.02));
-    REQUIRE(predicted_err_from_max_staleness_m == Catch::Approx(0.483).margin(0.02));
+    REQUIRE(max_turn_climb_speed_mps == Catch::Approx(28.631).margin(0.05));
+    REQUIRE(predicted_err_from_mean_staleness_m == Catch::Approx(0.318).margin(0.02));
+    REQUIRE(predicted_err_from_max_staleness_m == Catch::Approx(0.516).margin(0.02));
     // The real, central test of this ticket's own question: does the
     // staleness-predicted error bracket (mean-based .. max-based) contain,
     // or at least closely bound, the actual observed gap? Loose by design
     // (this is a plausibility check on real measured numbers, not a tuned
     // percentage) - both bounds have generous headroom around the exact
-    // measured 0.413m.
+    // measured 0.438m.
     REQUIRE(observed_gap_m > 0.5 * predicted_err_from_mean_staleness_m);
     REQUIRE(observed_gap_m < 1.5 * predicted_err_from_max_staleness_m);
 }
@@ -1674,10 +1692,10 @@ TEST_CASE("CPP-074: measuring GPS recall-window staleness as the real error sour
 // AND A REAL, HONEST NEGATIVE RESULT.
 //
 // CPP-074 measured GPS recall-window staleness directly and showed, via
-// real arithmetic, that it plausibly explains the ENTIRE ~0.41m
+// real arithmetic, that it plausibly explains the ENTIRE ~0.44m
 // unrecovered horizontal-position-accuracy gap CPP-067 found between
-// direct-fed (~0.13m) and buffered/jittered-but-recalled-against-CURRENT-
-// state (~0.54m) GPS fusion. This TEST_CASE builds and measures the
+// direct-fed (~0.15m) and buffered/jittered-but-recalled-against-CURRENT-
+// state (~0.59m) GPS fusion. This TEST_CASE builds and measures the
 // concrete fix CPP-074 recommended: linear interpolation between the two
 // real GPS samples that bracket the query time
 // (EkfCore::recall_gps_sample_interpolated(), ekf_core.hpp), instead of
@@ -1691,7 +1709,7 @@ TEST_CASE("CPP-074: measuring GPS recall-window staleness as the real error sour
 // THE REAL, MEASURED RESULT: NO, it does not close the gap in THIS
 // realistic closed-loop scenario - interpolated.fused.max_horiz_pos_err_m
 // comes back BIT-FOR-BIT IDENTICAL to buffered's own plain-nearest-match
-// result (both 0.542002m), not closer to the ~0.13m direct-fed baseline.
+// result (both 0.588148m), not closer to the ~0.15m direct-fed baseline.
 // Traced directly, not just observed: this run's own
 // gps_recall_staleness_log shows ZERO (0 of ~600) successful recalls ever
 // found an "after" bracket via peek_oldest() to interpolate against - not
@@ -1747,7 +1765,7 @@ TEST_CASE("CPP-075: closed-loop GPS fusion via the new interpolating recall_gps_
     // differing ONLY in which GPS recall path `fused` uses):
     //   (a) direct-fed, no buffering at all (CPP-056's own original path).
     //   (b) buffered, jittered arrival, plain nearest-match recall
-    //       (CPP-067's own path - the ~0.54m result).
+    //       (CPP-067's own path - the ~0.59m result).
     //   (c) buffered, jittered arrival, THIS ticket's new interpolating
     //       recall - the real payoff being measured here.
     const ClosedLoopComparison direct = run_closed_loop_comparison(false);
@@ -1803,21 +1821,21 @@ TEST_CASE("CPP-075: closed-loop GPS fusion via the new interpolating recall_gps_
     // THE REAL, HONESTLY-MEASURED RESULT (this run's own numbers - pinned
     // with a tight margin so a real regression is caught, not just "still
     // roughly in the right place"):
-    //   (a) direct-fed:                            0.1295m (CPP-067/074's
+    //   (a) direct-fed:                            0.1506m (CPP-067/074's
     //                                               own already-verified
     //                                               number).
-    //   (b) buffered, plain nearest-match:         0.5420m (CPP-067/074's
+    //   (b) buffered, plain nearest-match:         0.5881m (CPP-067/074's
     //                                               own already-verified
     //                                               number).
-    //   (c) buffered, INTERPOLATED (this ticket):  0.5420m - BIT-FOR-BIT
+    //   (c) buffered, INTERPOLATED (this ticket):  0.5881m - BIT-FOR-BIT
     //       IDENTICAL to (b), because (per the finding above) every
     //       single recall under interpolation took its own documented
     //       fallback-to-plain-single-sample path. The interpolating
     //       recall is functionally correct (proven directly by the two
     //       isolated unit tests, ekf_fusion_test.cpp) but never has an
     //       "after" bracket available to use in this realistic scenario.
-    REQUIRE(direct.fused.max_horiz_pos_err_m == Catch::Approx(0.1295).margin(0.005));
-    REQUIRE(buffered.fused.max_horiz_pos_err_m == Catch::Approx(0.5420).margin(0.005));
+    REQUIRE(direct.fused.max_horiz_pos_err_m == Catch::Approx(0.1506).margin(0.005));
+    REQUIRE(buffered.fused.max_horiz_pos_err_m == Catch::Approx(0.5881).margin(0.005));
 
     // THE CENTRAL ACCEPTANCE QUESTION, ANSWERED HONESTLY: interpolation
     // does NOT measurably close the gap in this realistic closed-loop
@@ -1830,7 +1848,7 @@ TEST_CASE("CPP-075: closed-loop GPS fusion via the new interpolating recall_gps_
     // eager-recall-every-tick polling architecture and what interpolation
     // needs: two real samples present in the buffer simultaneously).
     REQUIRE(interpolated.fused.max_horiz_pos_err_m == Catch::Approx(buffered.fused.max_horiz_pos_err_m).margin(1e-6));
-    REQUIRE(interpolated.fused.max_horiz_pos_err_m == Catch::Approx(0.5420).margin(0.005));
+    REQUIRE(interpolated.fused.max_horiz_pos_err_m == Catch::Approx(0.5881).margin(0.005));
 
     // Still comfortably inside the same real accuracy bar the direct-fed/
     // buffered paths already meet - the fix is a harmless no-op here, not
@@ -1892,8 +1910,8 @@ TEST_CASE("CPP-072: closed-loop GPS fusion via tick()'s delayed-horizon mechaniz
     // deterministic) - confirms this comparison is genuinely apples-to-
     // apples against the SAME baseline those tickets measured, not a
     // re-run that happens to differ.
-    REQUIRE(direct.fused.max_horiz_pos_err_m == Catch::Approx(0.1295).margin(0.005));
-    REQUIRE(buffered_current.fused.max_horiz_pos_err_m == Catch::Approx(0.5420).margin(0.005));
+    REQUIRE(direct.fused.max_horiz_pos_err_m == Catch::Approx(0.1506).margin(0.005));
+    REQUIRE(buffered_current.fused.max_horiz_pos_err_m == Catch::Approx(0.5881).margin(0.005));
 
     // Sanity: GPS fusion actually engaged meaningfully throughout (c)'s own
     // run too - same convention as every other buffered-GPS TEST_CASE in
@@ -1911,8 +1929,8 @@ TEST_CASE("CPP-072: closed-loop GPS fusion via tick()'s delayed-horizon mechaniz
     // whichever way the third number lands"). MEASURED, in this test's own
     // verification run - see this ticket's own commit message for the full
     // three-number writeup and conclusion:
-    //   (a) direct-fed, no delay (CPP-061/063):             0.1295m
-    //   (b) buffered vs CURRENT state (CPP-067):             0.5420m  (~4.2x)
+    //   (a) direct-fed, no delay (CPP-061/063):             0.1506m
+    //   (b) buffered vs CURRENT state (CPP-067):             0.5881m  (~3.9x)
     //   (c) buffered vs DELAYED state, RAW (THIS ticket):    see commit message
     //   (c) buffered vs DELAYED state, AFTER SETTLE:         see commit message
     // The RAW bound below is deliberately loose (a genuine sanity ceiling
@@ -1991,7 +2009,7 @@ TEST_CASE("CPP-068: closed-loop magnetometer fusion via the new push_mag_sample(
     // magnetometer fusion corrects directly), shifts by only a small,
     // comparable amount (+1.8% horiz pos, -0.25% vert pos, +2.3% vel,
     // +3.2% att) - nothing remotely like GPS's ~4.2x horizontal-position
-    // degradation (CPP-067's own measured 0.1295m -> 0.5420m). This
+    // degradation (CPP-067's own measured 0.1506m -> 0.5881m). This
     // CONFIRMS CPP-067's own hypothesis/expectation that attitude
     // (corrected directly, not accumulated via integration the way
     // position accumulates velocity's timing error) would be
@@ -2549,7 +2567,7 @@ WindClosedLoopResult run_wind_closed_loop(bool use_buffered_tas = false) {
             if (tick_index % kAirspeedPeriodTicks == kTasPushOffsetTicks[tas_jitter_slot]) {
                 fwcpp::ekf::TasSample tas;
                 tas.set_time_s(now_s + kTasSubTickJitterS[tas_jitter_slot]);
-                tas.true_airspeed_m_s = static_cast<fwcpp::ekf::ftype>(sim_plane.airspeed);
+                tas.true_airspeed_m_s = static_cast<fwcpp::ekf::ftype>(sim_plane.true_airspeed());
                 ekf.push_tas_sample(tas);
             }
 
@@ -2567,7 +2585,7 @@ WindClosedLoopResult run_wind_closed_loop(bool use_buffered_tas = false) {
                 }
             }
         } else if (tick_index % kAirspeedPeriodTicks == 0) {
-            const fwcpp::ekf::ftype true_airspeed_m_s = static_cast<fwcpp::ekf::ftype>(sim_plane.airspeed);
+            const fwcpp::ekf::ftype true_airspeed_m_s = static_cast<fwcpp::ekf::ftype>(sim_plane.true_airspeed());
             ++result.n_airspeed_attempts;
             const bool fused_now = ekf.fuse_airspeed(true_airspeed_m_s, kDtEkf);
             if (fused_now) {
@@ -2686,6 +2704,20 @@ TEST_CASE("CPP-064/CPP-065: closed-loop wind-state estimation, re-run after CPP-
     // above, to stay robust to minor floating-point/platform differences)
     // that would nonetheless have been FALSE before this ticket (every
     // sample was pinned at exactly the true wind's magnitude, 6.0 m/s).
+    // Emit the whole series, so that if a plant/filter change moves these the
+    // failure output shows the convergence curve itself rather than a single
+    // number. The values documented in the banner above were hand-probed and
+    // went stale silently when the plant changed; this stops that recurring.
+    // One INFO, not one per loop iteration: a Catch2 INFO's scope ends with the
+    // block it sits in, so an INFO inside the loop is already destroyed by the
+    // time the REQUIREs below run and nothing would be reported.
+    std::ostringstream wind_series;
+    for (std::size_t i = 0; i < r.samples.size(); ++i) {
+        wind_series << " | sample[" << i << "] t=" << (i + 1) * 30 << "s"
+                    << " est=(" << r.samples[i].wind_n_est << ", " << r.samples[i].wind_e_est << ")"
+                    << " err_mag=" << r.samples[i].wind_err_mag;
+    }
+    INFO("re-measured convergence series:" << wind_series.str());
     REQUIRE(r.samples[2].wind_err_mag < 2.0);   // t=60s:  was 6.0 before this ticket
     REQUIRE(r.samples[3].wind_err_mag < 0.5);   // t=90s:  was 6.0 before this ticket
     REQUIRE(r.samples[4].wind_err_mag < 0.1);   // t=120s: was 6.0 before this ticket

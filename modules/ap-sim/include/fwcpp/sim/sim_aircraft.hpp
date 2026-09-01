@@ -65,6 +65,17 @@ public:
 
     [[nodiscard]] float gross_mass() const { return mass + external_payload_mass; }
     [[nodiscard]] float get_air_density(float alt_amsl) const { return get_air_density_for_alt_amsl(alt_amsl); }
+    /** TRUE airspeed (m/s). `airspeed` is EQUIVALENT airspeed -- see
+     *  update_eas_airspeed(), which divides the airmass-relative speed by
+     *  eas2tas -- so anything wanting TAS must multiply it back. Provided
+     *  because that distinction is invisible at sea level and silently wrong
+     *  above it: eas2tas was pinned at 1.0 for SimPlane until update_position()
+     *  was added to its epilogue, and a consumer feeding `airspeed` straight
+     *  into an API documented as taking TAS (EkfCore::fuse_airspeed) went
+     *  unnoticed the whole time. Prefer this over `airspeed * eas2tas` at call
+     *  sites so the intent is stated rather than reconstructed. */
+    [[nodiscard]] float true_airspeed() const { return airspeed * eas2tas; }
+
     [[nodiscard]] const Location& get_location() const { return location; }
     [[nodiscard]] const Location& get_home() const { return home; }
     [[nodiscard]] const Location& get_origin() const { return origin; }
