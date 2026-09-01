@@ -98,6 +98,12 @@ TEST_CASE("SitlHarness::step() is behavior-preserving relative to a hand-rolled 
         // own file banner for the citation behind each line below.
         StabilizeInputs in;
         in.dt = kDt;
+        // Mirror SitlHarness::step()'s own eas2tas wiring. This hand-rolled
+        // equivalent exists to prove the harness is behaviour-preserving, so
+        // anything the harness feeds StabilizeInputs has to be fed here too --
+        // otherwise this test fails for the trivial reason that the two are no
+        // longer the same experiment.
+        in.eas2tas = manual_sim.eas2tas;
         in.now_ms = now_ms;
         in.now_us = static_cast<std::uint64_t>(now_ms) * 1000ULL;
 

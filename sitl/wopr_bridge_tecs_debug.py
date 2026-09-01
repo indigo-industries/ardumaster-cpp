@@ -16,7 +16,7 @@ MODE = struct.Struct("<B")
 ARM = struct.Struct("<B")
 MHDR = struct.Struct("<HH")
 MITEM = struct.Struct("<B3x5f")
-REPLY = struct.Struct("<I4BI18fHHIBB2x")
+REPLY = struct.Struct("<I4BI20fHHIBB2x")
 
 import threading
 
@@ -37,7 +37,7 @@ def rpc(t, payload):
     sock.sendto(HDR.pack(MAGIC, t, seq) + payload, addr)
     data, _ = sock.recvfrom(2048)
     r = REPLY.unpack(data)
-    return {"status": r[2], "pos": r[6:9], "airspeed": r[18], "wp": r[24], "sim_ms": r[26]}
+    return {"status": r[2], "pos": r[6:9], "airspeed": r[18], "wp": r[26], "sim_ms": r[28]}
 
 
 try:

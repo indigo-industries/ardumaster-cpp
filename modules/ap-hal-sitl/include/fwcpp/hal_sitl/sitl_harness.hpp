@@ -196,6 +196,22 @@ public:
     void step(std::uint32_t now_ms, float dt, const math::Vector3f& gyro_bias = math::Vector3f{}) {
         vehicle::StabilizeInputs in;
         in.dt = dt;
+        // EAS -> TAS conversion factor for TECS / L1 / roll / pitch. Upstream
+        // takes this from ahrs.get_EAS2TAS(), which derives it from baro
+        // altitude and temperature; this port has no atmosphere model in the
+        // AHRS, so the harness supplies the PLANT's own factor -- SITL truth,
+        // exactly as it already supplies true gyro/accel/velocity here.
+        //
+        // Left at the 1.0 default until now, which silently pinned every
+        // airspeed demand to sea level: TECS computes tas_dem_ = eas_dem_ *
+        // eas2tas_ and tas_max_ = airspeed_max * eas2tas_, so a climbing
+        // aircraft was being given EAS demands as if they were TAS. Harmless
+        // while SimPlane's own eas2tas was frozen at 1.0 (it did not refresh
+        // Location, so air density never varied); once that was fixed the
+        // plant and the controller disagreed about which airspeed they meant.
+        // A real vehicle would estimate this from baro rather than read it
+        // off the plant -- that remains the honest gap here.
+        in.eas2tas = sim_plane_.eas2tas;
         in.now_ms = now_ms;
         in.now_us = static_cast<std::uint64_t>(now_ms) * 1000ULL;
 
