@@ -43,6 +43,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <new>
 #include <span>
 
@@ -106,6 +107,51 @@ inline std::string path_dirname(const char* path) {
     const std::size_t cut = p.find_last_of("/\\");
     return (cut == std::string::npos) ? std::string() : p.substr(0, cut + 1);
 }
+
+// --- crash diagnostics (WOPR ticket 0399f049) ------------------------------
+//
+// This process had NO crash diagnostics: a mid-flight death left nothing on
+// the host side but "process dead" (a Geran-2 died under sustained host
+// hitching mid-session, root cause never established — the exit code wasn't
+// even read on the host until a separate fix). Two additions, BOTH
+// diagnostics-only — neither changes normal-path behavior or wire format:
+//   1. A Windows SEH filter logs the OS fault (code + faulting address)
+//      before the process terminates exactly as it would have anyway.
+//   2. A try/catch around each request's dispatch turns a thrown stdlib
+//      exception (e.g. std::bad_alloc under memory pressure — nothing in
+//      this file's own code throws, but std::string/std::vector still can)
+//      into one failed request instead of taking the whole lockstep server
+//      down; the host's own retry/detach logic already tolerates a bad reply.
+// Appended (not clobbered) across relaunches so a bridge that dies
+// repeatedly keeps its whole history in one file.
+std::FILE* g_crash_log = nullptr;
+
+void open_crash_log(const char* argv0, std::uint16_t port) {
+    const std::string dir = argv0 ? path_dirname(argv0) : std::string();
+    char name[560];
+    std::snprintf(name, sizeof(name), "%swopr_bridge_crash_%u.log",
+                  dir.c_str(), static_cast<unsigned>(port));
+    g_crash_log = std::fopen(name, "a");
+}
+
+#ifdef _WIN32
+// Runs in the crashing thread's exception context — kept minimal (a single
+// fprintf, no allocation beyond what fprintf itself needs) rather than
+// attempting a full minidump. Same termination as before (returning
+// EXCEPTION_EXECUTE_HANDLER matches the prior no-filter default), now with
+// one line of evidence instead of none.
+LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
+    if (g_crash_log) {
+        const EXCEPTION_RECORD* rec = info ? info->ExceptionRecord : nullptr;
+        std::fprintf(g_crash_log,
+            "UNHANDLED EXCEPTION: code=0x%08lX address=%p\n",
+            rec ? static_cast<unsigned long>(rec->ExceptionCode) : 0ul,
+            rec ? rec->ExceptionAddress : nullptr);
+        std::fflush(g_crash_log);
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
 constexpr float kDt = 0.02f;                 // this port's established Plane tick rate (50Hz)
 constexpr std::uint16_t kDefaultPort = 9101;
 constexpr std::uint16_t kMaxStepsPerRequest = 64; // 1.28 sim-seconds; caps a host dt spiral
@@ -1587,6 +1633,11 @@ int main(int argc, char** argv) {
         }
     }
 
+    open_crash_log(argc > 0 ? argv[0] : nullptr, port);
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(crash_filter);
+#endif
+
 #ifdef _WIN32
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -1713,6 +1764,7 @@ int main(int argc, char** argv) {
 
             if (header.magic == kMagic) {
                 Status status = Status::kBadPacket;
+                try {
                 switch (static_cast<MsgType>(header.type)) {
                 case MsgType::kInit: {
                     // Accept the pre-model 56-byte INIT too (missing tail =
@@ -1773,6 +1825,25 @@ int main(int argc, char** argv) {
                     break;
                 default:
                     break;
+                }
+                } catch (const std::exception& e) {
+                    if (g_crash_log) {
+                        std::fprintf(g_crash_log,
+                            "request type=%d seq=%u threw: %s\n",
+                            static_cast<int>(header.type),
+                            static_cast<unsigned>(header.seq), e.what());
+                        std::fflush(g_crash_log);
+                    }
+                    status = Status::kBadPacket;
+                } catch (...) {
+                    if (g_crash_log) {
+                        std::fprintf(g_crash_log,
+                            "request type=%d seq=%u threw an unrecognized exception\n",
+                            static_cast<int>(header.type),
+                            static_cast<unsigned>(header.seq));
+                        std::fflush(g_crash_log);
+                    }
+                    status = Status::kBadPacket;
                 }
                 reply.status = static_cast<std::uint8_t>(status);
             }
