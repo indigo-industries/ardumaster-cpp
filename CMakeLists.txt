@@ -54,17 +54,25 @@ target_compile_options(fwcpp_upstream_flags INTERFACE
 )
 
 # Native Windows builds: expose POSIX bits the Linux SITL host provides
-# (<strings.h>, M_PI). No-op on Linux.
+# (<strings.h>, M_PI, suseconds_t, gmtime_r, O_CLOEXEC). No-op on Linux.
 if(WIN32)
+    set(FWCPP_WIN_POSIX_HEADER ${CMAKE_SOURCE_DIR}/cmake/win-compat/fwcpp-win-posix.h)
     target_include_directories(fwcpp_upstream_flags INTERFACE
         ${CMAKE_SOURCE_DIR}/cmake/win-compat)
     target_compile_definitions(fwcpp_upstream_flags INTERFACE
         _USE_MATH_DEFINES
         _CRT_SECURE_NO_WARNINGS)
+    # Force-include the POSIX stand-ins rather than #including them from the
+    # sim headers, so modules/ap-sim stays free of platform #ifdefs and keeps
+    # diffing cleanly against upstream. GCC/Clang spelling; this project
+    # already assumes a GCC-style driver everywhere (-Wall/-f* below).
+    target_compile_options(fwcpp_upstream_flags INTERFACE
+        -include ${FWCPP_WIN_POSIX_HEADER})
     # Header-only consumers of sitl/ (and modules that don't link the
     # INTERFACE flags) still need the compat include path.
     include_directories(${CMAKE_SOURCE_DIR}/cmake/win-compat)
     add_compile_definitions(_USE_MATH_DEFINES _CRT_SECURE_NO_WARNINGS)
+    add_compile_options(-include ${FWCPP_WIN_POSIX_HEADER})
 endif()
 
 enable_testing()

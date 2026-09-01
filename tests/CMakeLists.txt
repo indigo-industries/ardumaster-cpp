@@ -10,6 +10,23 @@
 # effort charter). Amendable per-ticket if a module's test shape argues
 # otherwise; record the reason in that ticket's notes if so.
 
+# Fixture locations, so no test hardcodes one machine's absolute paths
+# (they used to point at /srv/ardumaster/... and only resolved on one dev box).
+#
+#   FWCPP_SOURCE_DIR         - this repo, for fixtures committed alongside the
+#                              code; those must exist, so tests REQUIRE them.
+#   FWCPP_RUST_FIXTURES_DIR  - ardumaster-rust's shared parity data. That is a
+#                              SEPARATE repo which may not be checked out, so
+#                              tests reading it SKIP when it is missing rather
+#                              than fail. Defaults to the sibling layout the
+#                              README describes; override with -D at configure
+#                              time or the same-named env var at run time.
+set(FWCPP_RUST_FIXTURES_DIR "${CMAKE_SOURCE_DIR}/../ardumaster-rust/fixtures"
+    CACHE PATH "ardumaster-rust fixtures dir (cross-repo parity data; tests skip if absent)")
+add_compile_definitions(
+    FWCPP_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    FWCPP_RUST_FIXTURES_DIR="${FWCPP_RUST_FIXTURES_DIR}")
+
 find_package(Catch2 3 REQUIRED)
 include(CTest)
 include(Catch)

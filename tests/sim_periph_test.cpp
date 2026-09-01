@@ -84,7 +84,10 @@ TEST_CASE("AIS position report is AIVDM with checksum") {
 }
 
 TEST_CASE("AIS replay emits file lines at 1 Hz") {
-    AIS_Replay replay("/srv/ardumaster/worktrees/ardumaster-cpp-ccp-051/modules/ap-sim/include/fwcpp/sim/SIM_AIS_data.txt");
+    // This fixture is committed in THIS repo, so it must always resolve.
+    const std::string ais_path =
+        std::string(FWCPP_SOURCE_DIR) + "/modules/ap-sim/include/fwcpp/sim/SIM_AIS_data.txt";
+    AIS_Replay replay(ais_path.c_str());
     REQUIRE(replay.has_file());
     replay.update(0);
     replay.update(1000);

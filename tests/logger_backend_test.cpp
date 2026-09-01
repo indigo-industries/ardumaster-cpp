@@ -290,6 +290,13 @@ TEST_CASE("FileBackend closed FILE* WritesOK false", "[logger][file]") {
 TEST_CASE("FileBackend short write returns false and counts locally", "[logger][file]") {
     using fwcpp::logger::FileBackend;
 
+    // Needs a stream whose writes always come up short. /dev/full does exactly
+    // that and has no Windows equivalent -- NUL swallows everything and reports
+    // success, which would assert the opposite of what this covers. Keep the
+    // real assertion on Linux and skip elsewhere rather than weaken it.
+#ifndef __linux__
+    SKIP("requires /dev/full, which only Linux provides");
+#else
     std::FILE* f = std::fopen("/dev/full", "w");
     REQUIRE(f != nullptr);
     FileBackend log(f);
@@ -299,6 +306,7 @@ TEST_CASE("FileBackend short write returns false and counts locally", "[logger][
     REQUIRE(log.num_short_writes() == 1);
     REQUIRE(log.logging_started());
     std::fclose(f);
+#endif
 }
 
 TEST_CASE("FileBackend EraseAll armed is a no-op", "[logger][file][erase]") {
