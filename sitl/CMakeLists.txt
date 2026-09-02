@@ -16,6 +16,13 @@ target_link_libraries(sitl_run PRIVATE ap-hal-sitl)
 add_executable(copter_sitl_run copter_main.cpp)
 target_link_libraries(copter_sitl_run PRIVATE ap-hal-sitl)
 
+# CCP-068: general-purpose arbitrary-waypoint Copter mission runner test —
+# proves copter_auto_mission.hpp against a mission the fixed CCP-065 demo
+# (copter_sitl_run) cannot express (multiple waypoints at different
+# altitudes). Same ap-hal-sitl link.
+add_executable(copter_auto_mission_run copter_auto_mission_main.cpp)
+target_link_libraries(copter_auto_mission_run PRIVATE ap-hal-sitl)
+
 # VCP-011: QuadPlane analogue of sitl_run / copter_sitl_run.
 add_executable(quadplane_sitl_run quadplane_main.cpp)
 target_link_libraries(quadplane_sitl_run PRIVATE ap-hal-sitl)
