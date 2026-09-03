@@ -1,0 +1,17 @@
+# Line endings are the repository's decision, not each machine's
+# core.autocrlf. Everything Git detects as text is stored and checked out
+# with LF on every platform; this repo has no Windows-native scripts that
+# need CRLF. Binary types are listed explicitly so autodetection never
+# touches them.
+* text=auto eol=lf
+
+*.png  binary
+*.jpg  binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.bin  binary
+*.a    binary
+*.lib  binary
+*.dll  binary
+*.exe  binary
