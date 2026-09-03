@@ -48,6 +48,13 @@
 // here needed the compiled-.cpp treatment scalar.cpp's wrap_* family or
 // Location::get_bearing needed.
 //
+// POST-PIN BACKPORT (update_loiter): the loiter PD wrong-way clamp carries
+// upstream master 29d590b ("limit loiter PD when inside radius"), which is
+// NOT in Plane-4.7.0. See the comment at the clamp itself for the failure
+// it fixes and the measurement behind it. Everything else in this file
+// still matches the 4.7.0 tag line-for-line (re-verified against both the
+// tag and master when the backport was made).
+//
 // CPP-048 ADDENDUM (bottom of this file, after the L1Control class): a
 // real top-level AP_Param Info[] table for L1Control::Gains, phase 2e of
 // the AP_Param vehicle-integration effort CPP-043 started. See that
@@ -326,11 +333,33 @@ public:
 
         const float vel_tangent = xtrack_vel_cap * static_cast<float>(loiter_direction);
 
-        if (ltrack_vel_cap < 0.0f && vel_tangent < 0.0f) {
-            lat_acc_dem_circ_pd = std::max(lat_acc_dem_circ_pd, 0.0f);
+        // Centripetal demand is computed BEFORE the PD clamp below because
+        // the inside-radius branch of that clamp needs it (upstream master
+        // 29d590b reordered these two lines for the same reason).
+        const float lat_acc_dem_circ_ctr = vel_tangent * vel_tangent / std::max(0.5f * radius, radius + xtrack_err_circ);
+
+        // Prevent the PD demand from turning the wrong way, either when
+        // flying the wrong way round or while flying OUT from inside the
+        // loiter radius. DELIBERATE DEPARTURE FROM THE Plane-4.7.0 PIN:
+        // this is upstream master commit 29d590b ("AP_L1_Control: limit
+        // loiter PD when inside radius", rubenp02/tridge, 2026-05-26),
+        // which landed after 4.7.0. At the pin the clamp only caught
+        // `vel_tangent < 0`, so a loiter entered near its own center (this
+        // port's ModeLOITER orbits the entry point; RTL orbits home) saw the
+        // P term (xtrack_err_circ * kx, large and negative deep inside the
+        // circle) swamp the centripetal term and command a bank AGAINST the
+        // requested loiter direction until the aircraft neared the ring
+        // (measured: up to 24 m/s^2 the wrong way 5 m from center). Bounding
+        // the PD term at -ctr makes the net circle demand >= 0 in the loiter
+        // direction while outbound-inside, exactly as master does.
+        if (ltrack_vel_cap < 0.0f) {
+            if (vel_tangent < 0.0f) {
+                lat_acc_dem_circ_pd = std::max(lat_acc_dem_circ_pd, 0.0f);
+            } else if (xtrack_err_circ < 0.0f) {
+                lat_acc_dem_circ_pd = std::max(lat_acc_dem_circ_pd, -lat_acc_dem_circ_ctr);
+            }
         }
 
-        const float lat_acc_dem_circ_ctr = vel_tangent * vel_tangent / std::max(0.5f * radius, radius + xtrack_err_circ);
         const float lat_acc_dem_circ = static_cast<float>(loiter_direction) * (lat_acc_dem_circ_pd + lat_acc_dem_circ_ctr);
 
         const std::uint32_t now_ms = in.now_ms;

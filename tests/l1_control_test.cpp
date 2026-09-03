@@ -231,6 +231,82 @@ TEST_CASE("update_loiter reports a positive crosstrack error whenever the aircra
     REQUIRE(l1.crosstrack_error() > 0.0f);
 }
 
+TEST_CASE("update_loiter entered near the center never demands a turn against the loiter direction while flying outbound", "[l1][loiter]") {
+    // Upstream master 29d590b backport (see l1_control.hpp's clamp comment).
+    // Deep inside the circle the P term (xtrack_err_circ * kx, ~ -27 m/s^2
+    // at 5 m from the center of a 200 m circle) used to swamp the
+    // centripetal term whenever the aircraft flew outbound with a positive
+    // tangential component, so the net demand banked AGAINST the requested
+    // direction. Sweep every outbound heading at several inside radii for
+    // both directions and require the demand's sign never opposes
+    // loiter_direction. (Before the backport this failed at 131 of the
+    // inside-circle heading/radius/direction combinations.) Only strictly
+    // OUTBOUND headings are swept (ltrack_vel_cap < 0: a northward velocity
+    // component, the aircraft sitting due north of the center) because
+    // that is the case the clamp covers; exactly-tangential headings
+    // (90/270) are excluded since there ltrack_vel_cap == 0, the strict
+    // `< 0` does not fire, and upstream master makes no sign guarantee
+    // either.
+    L1Control::Gains g = default_gains();
+    g.loiter_bank_limit = 0.0f; // loiter_radius(r) == r exactly
+    Location center(0, 0, 0, Location::AltFrame::ABSOLUTE);
+    const float radius = 200.0f;
+    const float dists[] = {5.0f, 50.0f, 100.0f, 150.0f, 190.0f};
+    for (std::int8_t dir : {std::int8_t{-1}, std::int8_t{1}}) {
+        for (float d : dists) {
+            for (int h = -85; h <= 85; h += 5) {
+                const float hdg = static_cast<float>(h) * static_cast<float>(M_PI) / 180.0f;
+                L1Control l1(g);
+                L1Inputs in;
+                in.location_valid = true;
+                in.current_loc = center;
+                in.current_loc.offset(d, 0.0f); // due north of center
+                in.groundspeed_vector = fwcpp::math::Vector2f(15.0f * std::cos(hdg), 15.0f * std::sin(hdg));
+                in.yaw_rad = hdg;
+                in.yaw_sensor_cd = static_cast<std::int32_t>(fwcpp::math::rad_to_cd(hdg));
+                in.eas2tas = 1.0f;
+                in.now_ms = 1000;
+                l1.update_loiter(center, radius, dir, in);
+                INFO("dir=" << int(dir) << " d=" << d << " hdg=" << h << " lat_acc=" << l1.lateral_acceleration());
+                // Inside the circle the 'circle' branch is always taken, so
+                // the aircraft is always reported as on-target...
+                REQUIRE(l1.reached_loiter_target());
+                // ...and the bank must be toward the loiter direction (or
+                // level), never against it.
+                REQUIRE(l1.lateral_acceleration() * static_cast<float>(dir) >= -1e-3f);
+            }
+        }
+    }
+}
+
+TEST_CASE("update_loiter clamp still lets the PD term act when flying inbound or the right way round inside the circle", "[l1][loiter]") {
+    // Guard against over-clamping: the new branch only fires while flying
+    // OUTBOUND (ltrack_vel_cap < 0). Flying INBOUND from inside the circle
+    // (toward the center) must still get the full, unclamped PD demand -
+    // which for this geometry is a genuine wrong-direction-looking negative
+    // number (P and D both pull the same way), because the aircraft really
+    // is heading the wrong way and needs to be turned around. This is
+    // upstream master's behaviour too.
+    L1Control::Gains g = default_gains();
+    g.loiter_bank_limit = 0.0f;
+    Location center(0, 0, 0, Location::AltFrame::ABSOLUTE);
+    L1Control l1(g);
+    L1Inputs in;
+    in.location_valid = true;
+    in.current_loc = center;
+    in.current_loc.offset(150.0f, 0.0f); // 150 m north, inside a 200 m circle
+    in.groundspeed_vector = fwcpp::math::Vector2f(-15.0f, 0.0f); // flying south: straight inbound
+    in.yaw_rad = static_cast<float>(M_PI);
+    in.yaw_sensor_cd = 18000;
+    in.eas2tas = 1.0f;
+    in.now_ms = 1000;
+    l1.update_loiter(center, 200.0f, 1, in);
+    // omega = 2pi/20, kx = omega^2 ~ 0.0987, kv = 2*0.75*omega ~ 0.471.
+    // xtrack_err = -50 -> P = -4.93; xtrack_vel_circ = -15 (inbound) -> D = -7.07;
+    // vel_tangent = 0 -> ctr = 0. Unclamped PD = -12.0, dir=+1 -> -12.0.
+    REQUIRE(l1.lateral_acceleration() == Catch::Approx(-12.0f).margin(0.2f));
+}
+
 TEST_CASE("update_heading_hold aligned with the commanded heading has zero lateral accel demand and zero crosstrack error", "[l1][heading_hold]") {
     L1Control l1(default_gains());
     L1Inputs in;
