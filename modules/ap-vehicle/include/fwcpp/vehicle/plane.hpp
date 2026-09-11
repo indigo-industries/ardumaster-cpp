@@ -3637,6 +3637,39 @@ struct StabilizeInputs {
                                       // compass_healthy is true this tick.
     bool compass_healthy = false;    // whether compass_field_bf holds a real reading this tick - see above.
 
+    // --- WOPR: WEIGHT-ON-WHEELS, AN EXPLICIT OPT-IN (same shape as
+    // compass_field_bf/compass_healthy directly above, and for the same
+    // reason). ---
+    //
+    // This port has no is_flying() concept anywhere - a repeated, standing
+    // exclusion (see the "DISARM-WHILE-FLYING GAP" note and the ~8 other
+    // is_flying() exclusions in this file's banner). But
+    // takeoff_calc_roll() needs to know "are the wheels still down", and
+    // upstream answers it with a PROXY - `highest_airspeed <
+    // takeoff_rotate_speed`, whose own comment reads "before Vrotate (aka,
+    // on the ground)". That equivalence is false for any airframe whose
+    // liftoff speed differs from its declared Vr, which in this plant is
+    // every heavy one: Aircraft::apply_ground_behavior() pins position.z
+    // and zeroes positive velocity_ef.z while hagl() <= 0.001, so liftoff
+    // speed is set by that clamp and scales with weight. Measured on the
+    // C-130 (mass 70000, takeoff_rotate_speed 68.0): it left the ground at
+    // 76.7 m/s, i.e. it crossed "Vrotate" 8.7 m/s while STILL ON THE
+    // WHEELS. The 5-degree level-roll clamp released early, and the
+    // airframe rolled to -17.97 deg within 1.1 s of liftoff, losing 33 m
+    // of centerline (WOPR tickets ef7da9d5, b90ddbee).
+    //
+    // TWO FIELDS, NOT ONE, DELIBERATELY: neither default of a lone bool is
+    // free. `on_ground = false` would disable the pre-rotation clamp for
+    // every caller that never sets it; `on_ground = true` would clamp roll
+    // to LEVEL_ROLL_LIMIT forever for those same callers. So validity is a
+    // SEPARATE, explicit opt-in and takeoff_calc_roll() keeps upstream's
+    // airspeed proxy bit-for-bit unchanged unless a caller actually
+    // supplies ground truth - exactly the treatment compass_healthy gets,
+    // and for the identical "a default value is not a real reading" reason.
+    // Every existing test and caller is unaffected.
+    bool on_ground = false;          // wheels down THIS tick - meaningful only if on_ground_valid.
+    bool on_ground_valid = false;    // whether on_ground holds a real reading this tick - see above.
+
     // --- CPP-082 additions - see modules/ap-airspeed's own file banner
     // for AirspeedSensor's full design, and mode.hpp's tick() for the
     // real insertion point. ---
@@ -5319,8 +5352,19 @@ public:
         rin.eas2tas = in.eas2tas;
         rin.dt = in.dt;
         rin.now_ms = in.now_ms;
-        const float roll_out =
-            roll_controller.get_servo_out(nav_roll_cd - roll_sensor_cd(), scaler, /*disable_integrator=*/false, ground_mode, rin);
+        // WOPR: no roll integration while the wheels are down. The plant's
+        // kFwdOnly ground handler pins roll to 0 and zeroes the gyro every
+        // on-ground tick, so a small one-signed takeoff roll demand can never
+        // close and the rate integrator ramps toward IMAX (~85% aileron) for
+        // the whole ground roll - then dumps it the tick the wheels leave.
+        // Measured on the C-130: -13.6 deg of left bank within 1.4 s of
+        // liftoff even with the level-roll clamp held to wheels-off. Aileron
+        // cannot roll an airframe sitting on its gear, so there is nothing to
+        // integrate against. Opt-in via on_ground_valid; callers that never
+        // set it keep upstream's behaviour bit-for-bit.
+        const bool wheels_down = in.on_ground_valid && in.on_ground;
+        const float roll_out = roll_controller.get_servo_out(nav_roll_cd - roll_sensor_cd(), scaler,
+                                                             /*disable_integrator=*/wheels_down, ground_mode, rin);
         srv_channels.set_output_scaled(srv::Function::kAileron, roll_out);
     }
 
@@ -5479,8 +5523,25 @@ public:
 
         // upstream: Plane::stabilize_yaw()'s real, remaining
         // `ground_steering` condition - see "GROUND_STEERING" note.
-        const bool ground_steering =
-            (channel_roll()->control_in == 0) && (std::fabs(relative_altitude_m()) < aparm.ground_steer_alt);
+        //
+        // WOPR: relative_altitude_m() < ground_steer_alt is a PROXY for
+        // "still on the wheels", same class of bug as takeoff_calc_roll()'s
+        // airspeed proxy (tickets ef7da9d5/b90ddbee). Measured on the C-130:
+        // it lifts off around 2 m AGL but ground_steer_alt is 5 m, so for
+        // ~2 s of genuine flight calc_nav_yaw_course()/calc_nav_yaw_ground()
+        // keep actively steering off locked_course_err - which is no longer
+        // suppressed once airborne (the plant only zeroes gyro while
+        // on_ground()) - instead of fading out a value captured AT liftoff.
+        // That live, evolving rudder command is what rolled the aircraft off
+        // course after liftoff (ticket a0524c85's residual). When the caller
+        // supplies real weight-on-wheels, release ground steering exactly at
+        // wheels-off and let the existing ground_steer_release_ fade smooth
+        // the transition, instead of the altitude proxy; otherwise fall back
+        // to upstream's proxy bit-for-bit. See StabilizeInputs::on_ground.
+        const bool still_on_wheels = in.on_ground_valid
+                                         ? in.on_ground
+                                         : (std::fabs(relative_altitude_m()) < aparm.ground_steer_alt);
+        const bool ground_steering = (channel_roll()->control_in == 0) && still_on_wheels;
 
         float steering_output = 0.0f;
         if (steer_state.hold_course_cd != -1 && ground_steering) {
@@ -5498,7 +5559,12 @@ public:
         yin.airspeed_eas = in.airspeed_eas;
         yin.now_ms = in.now_ms;
 
-        std::int32_t commanded_rudder = yaw_controller.get_servo_out(scaler, /*disable_integrator=*/false, yin);
+        // WOPR: same weight-on-wheels integrator gate as stabilize_roll() -
+        // ground steering owns yaw on the wheels and the plant strips lateral
+        // velocity there, so the damper's integrator has nothing real to
+        // integrate and would otherwise be released wound at liftoff.
+        const bool wheels_down = in.on_ground_valid && in.on_ground;
+        std::int32_t commanded_rudder = yaw_controller.get_servo_out(scaler, /*disable_integrator=*/wheels_down, yin);
         commanded_rudder += static_cast<std::int32_t>(srv_channels.get_output_scaled(srv::Function::kAileron) * aparm.kff_rudder_mix);
         commanded_rudder += rudder_input();
         // using_rate_controller is always false in this slice's scope
@@ -6902,7 +6968,21 @@ public:
         // the takeoff altitude.
         std::int32_t takeoff_roll_limit_cd = roll_limit_cd;
 
-        if (takeoff_state.highest_airspeed < aparm.takeoff_rotate_speed) {
+        // upstream: `if (takeoff_state.highest_airspeed < aparm.
+        // takeoff_rotate_speed)` alone, with the comment below. WOPR: that
+        // airspeed test is a PROXY for "still on the wheels" and it is wrong
+        // whenever liftoff speed differs from declared Vr - which the ground
+        // clamp guarantees for every heavy airframe in this plant (C-130:
+        // Vr 68, actual liftoff 76.7, so the clamp released 8.7 m/s early and
+        // the aircraft rolled to -17.97 deg at liftoff, losing 33 m of
+        // centerline - tickets ef7da9d5 / b90ddbee). When the caller supplies
+        // real weight-on-wheels, believe it and keep the clamp until the
+        // wheels are actually off; otherwise fall back to upstream's proxy
+        // bit-for-bit. See StabilizeInputs::on_ground/on_ground_valid.
+        const bool still_on_wheels = in.on_ground_valid
+                                         ? in.on_ground
+                                         : (takeoff_state.highest_airspeed < aparm.takeoff_rotate_speed);
+        if (still_on_wheels) {
             // before Vrotate (aka, on the ground)
             takeoff_roll_limit_cd = static_cast<std::int32_t>(aparm.level_roll_limit_deg * 100.0f);
         } else {

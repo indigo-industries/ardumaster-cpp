@@ -234,6 +234,43 @@ TEST_CASE("ModeFBWA: stabilize_roll's commanded rate shrinks as roll approaches 
     }
 }
 
+TEST_CASE("Plane::stabilize_roll: roll integrator does not wind up while weight-on-wheels is reported; integrates "
+          "normally without a WoW reading and once airborne (WOPR C-130 liftoff wing-drop fix)",
+          "[vehicle][takeoff]") {
+    // A 30 s ground roll: a small, one-signed takeoff roll demand (the
+    // level-roll clamp's own limit) against a roll the plant's kFwdOnly
+    // ground handler pins at 0, so the error can never close.
+    auto integrator_after_roll = [](bool wow_valid, bool on_ground) -> float {
+        Plane plane;
+        plane.update_flight_limits();
+        plane.nav_roll_cd = -500;
+        plane.ahrs_dcm_.roll = 0.0f;
+
+        StabilizeInputs in;
+        in.dt = 0.02f;
+        in.airspeed_valid = true;
+        in.airspeed_eas = 40.0f;
+        in.on_ground_valid = wow_valid;
+        in.on_ground = on_ground;
+        for (int i = 0; i < 1500; ++i) {
+            in.now_ms = static_cast<std::uint32_t>(20 * (i + 1));
+            plane.stabilize_roll(in);
+        }
+        return plane.roll_controller.get_pid_info().i;
+    };
+
+    const float no_wow = integrator_after_roll(/*wow_valid=*/false, /*on_ground=*/true);
+    const float wheels_down = integrator_after_roll(/*wow_valid=*/true, /*on_ground=*/true);
+    const float airborne = integrator_after_roll(/*wow_valid=*/true, /*on_ground=*/false);
+    INFO("I after 30 s: no WoW reading " << no_wow << ", wheels down " << wheels_down << ", wheels off " << airborne);
+
+    REQUIRE(no_wow < 0.0f);                     // upstream behaviour: winds toward the demand
+    REQUIRE(airborne == Catch::Approx(no_wow)); // wheels-off is bit-identical to no reading
+    // Cleared every tick: at most a single tick's accumulation (pid_info
+    // reports the pre-clear value), never the roll-long windup.
+    REQUIRE(std::fabs(wheels_down) < 0.01f * std::fabs(no_wow));
+}
+
 TEST_CASE("ModeFBWA::run stabilizes (unlike ModeManual) and outputs pilot throttle", "[vehicle][fbwa]") {
     Plane plane;
     plane.update_flight_limits();
@@ -5077,6 +5114,48 @@ TEST_CASE("ground_steering engages only when the roll stick is centered AND alti
     }
     SECTION("GROUND_STEER_ALT raised, roll centered, altitude below the threshold - engages") {
         REQUIRE(ground_steering_engaged(5.0f, 1500, 0.0f));
+    }
+}
+
+TEST_CASE("ground_steering: a real weight-on-wheels reading overrides the altitude proxy - released exactly at "
+          "wheels-off even below GROUND_STEER_ALT, engaged even above it if the caller still reports wheels down "
+          "(WOPR ticket a0524c85 residual fix)",
+          "[vehicle][ground_steering][takeoff]") {
+    constexpr std::uint32_t kNowMs = 5000;
+
+    // Same witness technique as the test just above: last_steer_ms only
+    // moves when calc_nav_yaw_ground()/calc_nav_yaw_course() actually ran.
+    auto ground_steering_engaged = [](float altitude_m, bool wow_valid, bool on_ground) -> bool {
+        Plane plane;
+        plane.aparm.ground_steer_alt = 5.0f;
+        plane.armed = true;
+        plane.hal.rc_output.force_safety_off();
+        set_sticks(plane, 1500, 1500, 1600, 1500); // roll centered, throttle nonzero
+        plane.update_current_loc(fwcpp::math::Vector3f(0.0f, 0.0f, -altitude_m));
+
+        StabilizeInputs in;
+        in.dt = 0.02f;
+        in.now_ms = kNowMs;
+        in.on_ground_valid = wow_valid;
+        in.on_ground = on_ground;
+        REQUIRE(plane.steer_state.last_steer_ms == 0U);
+        plane.stabilize_yaw(in);
+        return plane.steer_state.last_steer_ms == kNowMs;
+    };
+
+    SECTION("no WoW reading: falls back to the altitude proxy bit-for-bit (below threshold -> engaged)") {
+        REQUIRE(ground_steering_engaged(2.0f, /*wow_valid=*/false, /*on_ground=*/false));
+    }
+    SECTION("real WoW says airborne at 2 m AGL (below GROUND_STEER_ALT=5m) - released, not the altitude proxy's "
+             "still-engaged answer. This is the exact C-130 case: it lifts off around 2 m AGL and the altitude "
+             "proxy kept steering active for ~2 more seconds of real flight.") {
+        REQUIRE_FALSE(ground_steering_engaged(2.0f, /*wow_valid=*/true, /*on_ground=*/false));
+    }
+    SECTION("real WoW says still on wheels at 10 m AGL (above GROUND_STEER_ALT=5m) - stays engaged") {
+        REQUIRE(ground_steering_engaged(10.0f, /*wow_valid=*/true, /*on_ground=*/true));
+    }
+    SECTION("real WoW says airborne at 0 m AGL - released immediately, no altitude grace window at all") {
+        REQUIRE_FALSE(ground_steering_engaged(0.0f, /*wow_valid=*/true, /*on_ground=*/false));
     }
 }
 
