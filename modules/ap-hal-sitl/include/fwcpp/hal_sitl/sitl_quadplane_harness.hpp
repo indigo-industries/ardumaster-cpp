@@ -104,6 +104,14 @@ public:
         in.gps_use_enabled = true;
         in.position_ned = sim_.position;
         in.current_altitude_m = -sim_.position.z;
+
+        // WEIGHT-ON-WHEELS - same contract as the fixed-wing harness
+        // (sitl_harness.hpp), fed here too so the quadplane path does not
+        // silently keep upstream's `highest_airspeed < takeoff_rotate_speed`
+        // proxy while the plane path uses real ground truth. See
+        // StabilizeInputs::on_ground/on_ground_valid and takeoff_calc_roll().
+        in.on_ground = sim_.on_ground();
+        in.on_ground_valid = true;
         // BARO. Feed the plant's pressure/temperature through plane.baro and
         // let tick() derive eas2tas from the MEASURED pressure against the
         // barometer's own calibrated ground reference (mode.hpp). This retires

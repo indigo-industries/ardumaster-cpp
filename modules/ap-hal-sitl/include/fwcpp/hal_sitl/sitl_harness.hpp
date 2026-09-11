@@ -239,6 +239,20 @@ public:
         // for the exact convention this reproduces (plane.hpp file banner).
         in.position_ned = sim_plane_.position;
         in.current_altitude_m = -sim_plane_.position.z;
+
+        // WEIGHT-ON-WHEELS. The plant already owns this truth
+        // (Aircraft::on_ground(), hagl() <= 0.001) and a real airframe has a
+        // WoW switch, so feeding it here is the same "caller supplies what the
+        // controller cannot sense" contract as accel/compass/position above -
+        // NOT a controller reaching into the simulator. takeoff_calc_roll()
+        // uses it to hold the level-roll clamp until the wheels are actually
+        // off, instead of upstream's `highest_airspeed < takeoff_rotate_speed`
+        // proxy, which fires early on any airframe whose ground-clamp liftoff
+        // speed exceeds its declared Vr (WOPR tickets ef7da9d5 / b90ddbee).
+        // Setting on_ground_valid is what opts this harness in; callers that
+        // never set it keep upstream's proxy bit-for-bit.
+        in.on_ground = sim_plane_.on_ground();
+        in.on_ground_valid = true;
         // BARO. Feed the plant's pressure/temperature through plane.baro and
         // let tick() derive eas2tas from the MEASURED pressure against the
         // barometer's own calibrated ground reference (mode.hpp). This retires

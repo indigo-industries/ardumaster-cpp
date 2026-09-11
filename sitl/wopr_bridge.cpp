@@ -539,6 +539,11 @@ public:
         // stall — then decayed to 18.3 m/s at full throttle, mushing behind the
         // power curve with -55 m of cross-track. Every airframe needs its real Vr.
         fwcpp::sim::json_get_float(obj, "takeoff_rotate_speed", plane_.aparm.takeoff_rotate_speed);
+        // TKOFF_GND_PITCH - the pitch the takeoff FSM holds on the wheels
+        // before Vr. Upstream's 5 deg suits small/taildragger airframes; a
+        // tricycle transport rolls level, and 5 deg held the C-130 visibly
+        // nose-high for most of its ground roll.
+        fwcpp::sim::json_get_float(obj, "takeoff_ground_pitch", plane_.mode_takeoff.ground_pitch);
         fwcpp::sim::json_get_float(obj, "ground_steer_alt", plane_.aparm.ground_steer_alt);
         fwcpp::sim::json_get_float(obj, "yaw2srv_damp", plane_.yaw_controller.mutable_gains().k_d);
         // TECS holds its OWN by-value copy of the airframe params, taken at

@@ -129,6 +129,10 @@ TEST_CASE("SitlHarness::step() is behavior-preserving relative to a hand-rolled 
         in.gps_use_enabled = true;
         in.position_ned = manual_sim.position;
         in.current_altitude_m = -manual_sim.position.z;
+        // Mirror SitlHarness::step()'s weight-on-wheels feed (takeoff roll
+        // clamp + on-ground integrator gates read it).
+        in.on_ground = manual_sim.on_ground();
+        in.on_ground_valid = true;
         // Mirror SitlHarness::step()'s baro feed. eas2tas is no longer set
         // here at all -- tick() derives it inside plane.baro from this
         // pressure/temperature pair, so mirroring the SENSOR input is what
