@@ -5140,6 +5140,9 @@ public:
         std::uint32_t last_steer_ms = 0;
     };
     SteerState steer_state;
+    // Last ground-steering rudder command, faded out after ground_steering
+    // releases (see stabilize_yaw's handoff) instead of dumped in one tick.
+    float ground_steer_release_ = 0.0f;
 
     // CPP-031 slice 12 (ModeTAKEOFF) - upstream: the takeoff-relevant
     // subset of Plane::auto_state (AP_FixedWing::AutoState) PLUS Plane::
@@ -5508,8 +5511,22 @@ public:
 
         if (!ground_steering) {
             // Not doing ground steering, output rudder on steering channel.
-            srv_channels.set_output_scaled(srv::Function::kRudder, rudder_output);
-            srv_channels.set_output_scaled(srv::Function::kSteering, rudder_output);
+            //
+            // SMOOTH HANDOFF (WOPR, 2026-09-10): upstream switches straight
+            // from steering_output to rudder_output the tick |alt| crosses
+            // ground_steer_alt. steering_output was actively counter-steering
+            // whatever asymmetry the roll had, so that snap dumps the whole
+            // deflection at rotation. Measured on a jet-transport at KPHX the
+            // liftoff yaw kick SCALES with hold quality — -3.3 deg with a
+            // partial ground hold, -9.2 deg (bank -21 deg) with a perfect
+            // one — each becoming ~50-60 m of centerline drift that the
+            // roll-capped takeoff L1 cannot recover. Fade the last ground
+            // command out (~0.5 s) so the yaw damper/L1 see a ramp, not a step.
+            ground_steer_release_ *= std::exp(-in.dt / 0.5f);
+            const float handoff_output =
+                std::max(-4500.0f, std::min(4500.0f, rudder_output + ground_steer_release_));
+            srv_channels.set_output_scaled(srv::Function::kRudder, handoff_output);
+            srv_channels.set_output_scaled(srv::Function::kSteering, handoff_output);
         } else {
             // Ground steering active. This port's configure_channels()
             // never assigns Function::kSteering to any physical channel,
@@ -5517,6 +5534,7 @@ public:
             // be false here - taking upstream's real "no steering output
             // configured" branch unconditionally: BOTH channels get
             // steering_output. See "OUTPUT-CHANNEL SELECTION" note.
+            ground_steer_release_ = steering_output;   // faded out after release, above
             srv_channels.set_output_scaled(srv::Function::kRudder, steering_output);
             srv_channels.set_output_scaled(srv::Function::kSteering, steering_output);
         }

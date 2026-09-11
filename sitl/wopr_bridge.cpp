@@ -514,10 +514,33 @@ public:
         fwcpp::sim::json_get_float(obj, "hover_throttle", plant.hover_throttle);
         fwcpp::sim::json_get_vector3(obj, "moment_inertia", plant.moment_inertia);
         fwcpp::sim::json_get_float(obj, "ground_friction", plant.ground_friction);
+        // Propeller thrust lapse (m/s). 0 = upstream jet-style constant thrust.
+        // >0 = thrust = T_static * min(1, prop_lapse_speed / V): full static
+        // thrust up to that speed, then ~1/V (constant shaft power). For a
+        // turboprop it is P_eff / T_static. Without it a prop airframe gets
+        // jet thrust characteristics — no low-speed thrust advantage — which
+        // starved the post-takeoff energy loop measured on the C-130.
+        fwcpp::sim::json_get_float(obj, "prop_lapse_speed", plant.prop_lapse_speed);
         fwcpp::sim::json_get_float(obj, "airspeed_min", plane_.aparm.airspeed_min);
         fwcpp::sim::json_get_float(obj, "airspeed_cruise", plane_.aparm.airspeed_cruise);
         fwcpp::sim::json_get_float(obj, "airspeed_max", plane_.aparm.airspeed_max);
         fwcpp::sim::json_get_float(obj, "scaling_speed", plane_.aparm.scaling_speed);
+        // Lateral/directional tuning. Both default to upstream's own 0, which
+        // leaves the yaw axis open-loop: GROUND_STEER_ALT=0 disables the
+        // course-hold ground steering (|alt| < 0 is never true) so the takeoff
+        // roll never steers to the course it locked, and YAW2SRV_DAMP=0
+        // disables the YawController entirely (no yaw rate damping in flight).
+        // Measured on a jet-transport takeoff: ~2 deg heading error at
+        // rotation growing to ~80 m off centerline by takeoff altitude, and
+        // roll reversals lagging ~5 s then overshooting ~1.5x. Set per model.
+        // TKOFF_ROTATE_SPD. Upstream's default is 0 = "no speed gate", so the
+        // takeoff FSM rotates on pitch demand alone the moment AUTO starts.
+        // Measured on ga-light: lifted off at 19.9 m/s — BELOW its own 24 m/s
+        // stall — then decayed to 18.3 m/s at full throttle, mushing behind the
+        // power curve with -55 m of cross-track. Every airframe needs its real Vr.
+        fwcpp::sim::json_get_float(obj, "takeoff_rotate_speed", plane_.aparm.takeoff_rotate_speed);
+        fwcpp::sim::json_get_float(obj, "ground_steer_alt", plane_.aparm.ground_steer_alt);
+        fwcpp::sim::json_get_float(obj, "yaw2srv_damp", plane_.yaw_controller.mutable_gains().k_d);
         // TECS holds its OWN by-value copy of the airframe params, taken at
         // construction — mirror the envelope into it or every tas demand is
         // clamped to the foamie's [9, 22] m/s forever (measured live).

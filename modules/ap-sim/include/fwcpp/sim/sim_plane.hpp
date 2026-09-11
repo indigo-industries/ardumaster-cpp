@@ -959,7 +959,19 @@ public:
         // scale thrust to newtons - see thrust_scale()'s own doc comment
         // above for the upstream citation and the CPP-094
         // heavy_frozen_mass_kg_ handling.
-        const float thrust_newtons = mixed.throttle * thrust_scale();
+        //
+        // Propeller lapse (WOPR, opt-in): a prop at constant shaft power gives
+        // ~T_static up to prop_lapse_speed, then thrust falls as 1/V. Without
+        // it a turboprop airframe carries jet thrust characteristics (no
+        // low-speed thrust advantage), which starved the post-takeoff TECS
+        // energy loop measured on the C-130 (75 -> 150 m/s at max throttle
+        // while climbing). prop_lapse_speed <= 0 leaves upstream's constant
+        // thrust bit-identical for every existing model.
+        float prop_lapse = 1.0f;
+        if (prop_lapse_speed > 0.0f) {
+            prop_lapse = std::fmin(1.0f, prop_lapse_speed / std::fmax(airspeed, 1.0f));
+        }
+        const float thrust_newtons = mixed.throttle * thrust_scale() * prop_lapse;
 
         accel_body = math::Vector3f(thrust_newtons, 0.0f, 0.0f) + force;
         accel_body = accel_body / mass;
@@ -1101,6 +1113,10 @@ public:
     // rot_accel. {1,1,1} = upstream's own implicit-unit-inertia behavior,
     // bit-identical - see the update() divergence note.
     math::Vector3f moment_inertia{1.0f, 1.0f, 1.0f};
+    // Propeller thrust-lapse speed (m/s). 0 = upstream's constant jet-style
+    // thrust, bit-identical. >0 = T_static up to this speed, then ~1/V
+    // (constant shaft power); = P_eff / T_static for a turboprop. See update().
+    float prop_lapse_speed = 0.0f;
     // Speed-proportional ground drag (1/s). 0.3f = upstream's own constant,
     // bit-identical - see the on_ground() note in update().
     float ground_friction = 0.3f;

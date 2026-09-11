@@ -197,6 +197,16 @@ public:
     // upstream: return true if rate control is enabled
     [[nodiscard]] bool rate_control_enabled() const { return gains_.rate_enable; }
 
+    // WOPR-BRIDGE accessor (same rationale as tecs.hpp's mutable_gains): the
+    // Plane constructs this controller with default Gains{} (k_d = 0, i.e.
+    // yaw damping OFF and get_servo_out() early-returning), and gains_ is a
+    // private by-value copy — so without this there is no way for a bridge
+    // to set YAW2SRV_DAMP per airframe model after construction. Measured
+    // live on a jet-transport takeoff: with k_d = 0 the yaw axis is
+    // open-loop, roll reversals lag then overshoot ~1.5x, and a rotation
+    // yaw kick grows into an 80 m centerline drift by takeoff altitude.
+    [[nodiscard]] Gains& mutable_gains() { return gains_; }
+
     // upstream: AP_YawController::get_servo_out(scaler,
     // disable_integrator) - entry point #1, see file banner. Returns a
     // rudder deflection in centi-degrees, +ve deflection yaws nose right.
