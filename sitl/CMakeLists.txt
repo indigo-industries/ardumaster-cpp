@@ -34,6 +34,19 @@ target_link_libraries(quadplane_sitl_run PRIVATE ap-hal-sitl)
 # executable can be spawned by a host process without the llvm-mingw
 # runtime DLLs (libc++.dll/libunwind.dll/libwinpthread-1.dll) on PATH.
 add_executable(wopr_bridge wopr_bridge.cpp)
+
+# Standalone model-reader regression, available on SITL-only hosts without Catch2.
+option(FWCPP_BRIDGE_MODEL_TEST "Build the standalone WOPR model-reader regression" OFF)
+if(FWCPP_BRIDGE_MODEL_TEST)
+    add_executable(wopr_bridge_model_test wopr_bridge_model_test.cpp)
+    target_link_libraries(wopr_bridge_model_test PRIVATE ap-hal-sitl ap-gcs)
+    if(WIN32)
+        target_link_libraries(wopr_bridge_model_test PRIVATE ws2_32)
+        target_link_options(wopr_bridge_model_test PRIVATE -static)
+    endif()
+    add_test(NAME wopr_bridge_model COMMAND wopr_bridge_model_test
+        ${CMAKE_SOURCE_DIR}/tests/fixtures/wopr_bridge_model_overrides.json)
+endif()
 target_link_libraries(wopr_bridge PRIVATE ap-hal-sitl ap-gcs)
 if(WIN32)
     target_link_libraries(wopr_bridge PRIVATE ws2_32)

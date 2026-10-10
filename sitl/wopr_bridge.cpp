@@ -295,6 +295,7 @@ enum class BridgeMode : std::uint8_t {
 };
 
 class Bridge {
+    friend struct ModelLoaderTestAccess;
 public:
     Status init(const InitPayload& p) {
         // Rebuild the whole vehicle+plant in place: INIT is also re-INIT
@@ -545,6 +546,9 @@ public:
         // nose-high for most of its ground roll.
         fwcpp::sim::json_get_float(obj, "takeoff_ground_pitch", plane_.mode_takeoff.ground_pitch);
         fwcpp::sim::json_get_float(obj, "ground_steer_alt", plane_.aparm.ground_steer_alt);
+        // Landing sidecars use the same AP_Landing units as FixedWingTunables.
+        fwcpp::sim::json_get_float(obj, "flare_alt_m", plane_.aparm.flare_alt_m);
+        fwcpp::sim::json_get_float(obj, "flare_sec", plane_.aparm.flare_sec);
         fwcpp::sim::json_get_float(obj, "yaw2srv_damp", plane_.yaw_controller.mutable_gains().k_d);
         // TECS holds its OWN by-value copy of the airframe params, taken at
         // construction — mirror the envelope into it or every tas demand is
@@ -567,6 +571,8 @@ public:
         fwcpp::sim::json_get_float(obj, "tecs_thr_damp", tg.thr_damp);
         fwcpp::sim::json_get_float(obj, "tecs_ptch_damp", tg.ptch_damp);
         fwcpp::sim::json_get_float(obj, "tecs_integ_gain", tg.integ_gain);
+        fwcpp::sim::json_get_float(obj, "land_sink", tg.land_sink);
+        fwcpp::sim::json_get_float(obj, "land_src", tg.land_sink_rate_change);
         // VTOL law tuning (vtol models only; harmless no-ops otherwise).
         fwcpp::sim::json_get_float(obj, "vtol_climb_gain", vtol_climb_gain_);
         fwcpp::sim::json_get_float(obj, "vtol_trim_gain", vtol_trim_gain_);
