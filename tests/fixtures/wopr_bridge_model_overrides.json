@@ -1,0 +1,9 @@
+{
+  "ground_steer_alt": 7.0,
+  "prop_lapse_speed": 59.0,
+  "takeoff_ground_pitch": 2.0,
+  "flare_alt_m": 17.5,
+  "flare_sec": 4.5,
+  "land_sink": 2.25,
+  "land_src": 0.125
+}
