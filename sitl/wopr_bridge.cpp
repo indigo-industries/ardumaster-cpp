@@ -515,6 +515,8 @@ public:
         fwcpp::sim::json_get_float(obj, "hover_throttle", plant.hover_throttle);
         fwcpp::sim::json_get_vector3(obj, "moment_inertia", plant.moment_inertia);
         fwcpp::sim::json_get_float(obj, "ground_friction", plant.ground_friction);
+        fwcpp::sim::json_get_float(obj, "ground_brake_mu", plant.ground_brake_mu);
+        plant.ground_brake_mu = fwcpp::math::constrain_value(plant.ground_brake_mu, 0.0f, 1.0f);
         // Propeller thrust lapse (m/s). 0 = upstream jet-style constant thrust.
         // >0 = thrust = T_static * min(1, prop_lapse_speed / V): full static
         // thrust up to that speed, then ~1/V (constant shaft power). For a
@@ -526,6 +528,9 @@ public:
         fwcpp::sim::json_get_float(obj, "airspeed_cruise", plane_.aparm.airspeed_cruise);
         fwcpp::sim::json_get_float(obj, "airspeed_max", plane_.aparm.airspeed_max);
         fwcpp::sim::json_get_float(obj, "scaling_speed", plane_.aparm.scaling_speed);
+        float nav_period = 17.0f;
+        fwcpp::sim::json_get_float(obj, "nav_l1_period", nav_period);
+        plane_.nav_controller.set_default_period(fwcpp::math::constrain_value(nav_period, 1.0f, 120.0f));
         // Lateral/directional tuning. Both default to upstream's own 0, which
         // leaves the yaw axis open-loop: GROUND_STEER_ALT=0 disables the
         // course-hold ground steering (|alt| < 0 is never true) so the takeoff
@@ -572,6 +577,7 @@ public:
         fwcpp::sim::json_get_float(obj, "tecs_ptch_damp", tg.ptch_damp);
         fwcpp::sim::json_get_float(obj, "tecs_integ_gain", tg.integ_gain);
         fwcpp::sim::json_get_float(obj, "land_sink", tg.land_sink);
+        fwcpp::sim::json_get_float(obj, "land_airspeed", tg.land_airspeed);
         fwcpp::sim::json_get_float(obj, "land_src", tg.land_sink_rate_change);
         // VTOL law tuning (vtol models only; harmless no-ops otherwise).
         fwcpp::sim::json_get_float(obj, "vtol_climb_gain", vtol_climb_gain_);
@@ -731,6 +737,12 @@ public:
                     plane_.tecs.reset();
                 }
             }
+            // Model-opted-in autobrake: final landing only, never takeoff or
+            // another mode. The plant applies tyre force only on contact.
+            const auto* landing_item = plane_.mission.current();
+            sim_.wheel_brake = mode_ == BridgeMode::kAuto && landing_item &&
+                landing_item->command == fwcpp::vehicle::MissionCommand::Land &&
+                plane_.is_landing_final_flare() ? 1.0f : 0.0f;
             harness_.step(now_ms_, kDt);
             if (debug_ && (now_ms_ % 5000u) == 0u) {
                 const fwcpp::tecs::Tecs::DebugState d = plane_.tecs.debug_state();

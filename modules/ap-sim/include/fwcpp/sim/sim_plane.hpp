@@ -985,6 +985,13 @@ public:
             // rolling-resistance-scale value (~0.02) via "ground_friction".
             const math::Vector3f vel_body = dcm.transposed() * velocity_ef;
             accel_body.x -= vel_body.x * ground_friction;
+            // Optional wheel brakes: Coulomb friction on the weight still
+            // carried by the wheels. Aerodynamic lift unloads the brakes.
+            // Bounded by velocity/dt so braking alone cannot reverse motion.
+            const float normal_accel = std::fmax(0.0f, kGravityMss + force.z / mass);
+            const float brake_accel = std::fmin(std::fabs(vel_body.x) / std::fmax(dt, 1.e-6f),
+                ground_brake_mu * wheel_brake * normal_accel);
+            accel_body.x -= std::copysign(brake_accel, vel_body.x);
         }
 
         update_dynamics(rot_accel, dt);
@@ -1120,6 +1127,8 @@ public:
     // Speed-proportional ground drag (1/s). 0.3f = upstream's own constant,
     // bit-identical - see the on_ground() note in update().
     float ground_friction = 0.3f;
+    float ground_brake_mu = 0.0f; // tyre/runway friction coefficient; opt-in model
+    float wheel_brake = 0.0f;     // commanded fraction [0,1], never active in flight
     std::uniform_real_distribution<float> airspeed_noise_dist_{-1.0f, 1.0f};
     WindConfig wind_config;
     FrameConfig frame_config;

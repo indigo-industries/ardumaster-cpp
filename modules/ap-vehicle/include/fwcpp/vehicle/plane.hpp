@@ -4446,15 +4446,12 @@ private:
 // airspeed target (AP_Landing::type_slope_get_target_airspeed_cm()), not
 // mode_auto_target_airspeed_cm()'s plain cruise speed. Tracing
 // type_slope_get_target_airspeed_cm() in full: `tecs_Controller->
-// get_land_airspeed()` (TECS_LAND_ARSPD) is NOT ported anywhere in this
-// port (ap-tecs's own CPP-040 banner: "get_land_airspeed() accessor -
-// STILL excluded" - no _landAirspeed/TECS_LAND_ARSPD field exists), so it
-// is permanently at its real disabled sentinel (-1), and PREFLARE's own
-// pre_flare_airspeed override is excluded (see below) and real-defaults
-// to 0 (LAND_PF_ARSPD, disabled) - so the function's own switch collapses
-// to exactly TWO cases: NORMAL -> aparm.airspeed_cruise (unchanged from
-// AUTO's existing target), APPROACH/FINAL -> `0.5*(airspeed_cruise +
-// airspeed_min)`. The headwind-compensation tail
+// get_land_airspeed()` (TECS_LAND_ARSPD) is now available and consumed:
+// NORMAL uses aparm.airspeed_cruise; APPROACH/FINAL use a positive configured
+// landing airspeed, falling back to `0.5*(airspeed_cruise + airspeed_min)`
+// when disabled (-1). PREFLARE's separate pre_flare_airspeed override
+// remains excluded (see below; LAND_PF_ARSPD defaults to 0, disabled).
+// The headwind-compensation tail
 // (`ahrs.head_wind()*wind_comp`) and `allow_max_airspeed_on_land()`'s
 // AIRSPEED_MAX ceiling are both real but OBSERVABLY INERT for this port:
 // no wind-ESTIMATION subsystem exists anywhere in this port's AHRS (see
@@ -6768,8 +6765,8 @@ public:
 
         // CPP-041: landing gets its OWN airspeed target once past NORMAL -
         // see "CPP-041 ADDENDUM"'s own "LANDING AIRSPEED TARGET" note for
-        // the full trace of why this collapses to exactly these two real
-        // cases (TECS_LAND_ARSPD/pre_flare_airspeed both unported/disabled).
+        // the configured TECS_LAND_ARSPD and disabled-value fallback.
+        // The separate PREFLARE airspeed override remains unported.
         const MissionItem* current_item = mission.current();
         const bool is_land_item = current_item != nullptr && current_item->command == MissionCommand::Land;
 
@@ -6779,8 +6776,10 @@ public:
         // to BOTH the normal-AUTO and the landing target, matching upstream
         // (the clamp is unconditional, after every branch).
         const float airspeed_lower_bound = aparm.airspeed_stall > 0.0f ? aparm.airspeed_stall : aparm.airspeed_min;
+        const float configured_land_speed = tecs.get_land_airspeed();
         const float raw_airspeed_target = (is_land_item && landing_stage != LandingStage::Normal)
-            ? 0.5f * (aparm.airspeed_cruise + aparm.airspeed_min)
+            ? (configured_land_speed > 0.0f ? configured_land_speed
+                                          : 0.5f * (aparm.airspeed_cruise + aparm.airspeed_min))
             : aparm.airspeed_cruise;
         const float airspeed_target = math::constrain_value(raw_airspeed_target, airspeed_lower_bound, aparm.airspeed_max);
         const std::int32_t eas_dem_cm = static_cast<std::int32_t>(airspeed_target * 100.0f);

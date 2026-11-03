@@ -5,5 +5,8 @@
   "flare_alt_m": 17.5,
   "flare_sec": 4.5,
   "land_sink": 2.25,
+  "land_airspeed": 18.0,
+  "nav_l1_period": 40.0,
+  "ground_brake_mu": 0.4,
   "land_src": 0.125
 }
