@@ -971,8 +971,8 @@ public:
     // Load an uploaded geodetic mission: same NED-from-start conversion the
     // WOPR wire path uses, but via the sim's real home Location so a GCS and
     // the WOPR host agree on where every waypoint is. Rows the port can't fly
-    // (DO_*, CONDITION_*, loiters) are skipped; seq 0 NAV_WAYPOINT = home row.
-    // Returns the number of flyable items loaded, or -1 on failure.
+    // (DO_*, CONDITION_*, loiters) reject the upload; seq 0 NAV_WAYPOINT = home.
+    // Returns the flyable count, or a negated MAV_MISSION_RESULT on failure.
     int gcs_mission_load(const GcsGeoItem* rows, std::size_t n) {
         if (!initialized_) {
             return -1;
@@ -983,6 +983,9 @@ public:
         std::size_t count = 0;
         for (std::size_t i = 0; i < n; ++i) {
             const GcsGeoItem& r = rows[i];
+            if (r.frame != 0 && r.frame != 3 && r.frame != 5 && r.frame != 6) {
+                return -2; // MAV_MISSION_UNSUPPORTED_FRAME
+            }
             if (r.seq == 0 && r.command == 16) {
                 continue; // home row
             }
@@ -996,7 +999,7 @@ public:
                      break;
             case 21: m.command = fwcpp::vehicle::MissionCommand::Land; break;
             default:
-                continue; // unsupported row — skipped, not fatal
+                return -3; // MAV_MISSION_UNSUPPORTED; preserve previous mission/cache
             }
             fwcpp::Location wp;
             wp.lat = r.lat_1e7;
@@ -1009,12 +1012,12 @@ public:
             const float up_m = relative ? r.z : (r.z - home_alt_m);
             m.loc.set_alt_m(up_m, fwcpp::Location::AltFrame::ABSOLUTE);
             if (count >= fwcpp::vehicle::kMaxMissionItems) {
-                return -1;
+                return -4; // MAV_MISSION_NO_SPACE
             }
             converted[count++] = m;
         }
         if (count == 0) {
-            return -1;
+            return -5; // MAV_MISSION_INVALID (home alone is not executable)
         }
         if (!plane_.mission.load(std::span<const fwcpp::vehicle::MissionItem>(converted.data(), count))) {
             return -1;
@@ -1590,7 +1593,7 @@ inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f)
             std::printf("mavlink: mission upload accepted (%u rows, %d flyable)\n",
                         static_cast<unsigned>(g.up_count), loaded);
         } else {
-            send_mission_ack(g, 4); // MAV_MISSION_UNSUPPORTED
+            send_mission_ack(g, static_cast<std::uint8_t>(-loaded));
         }
         std::fflush(stdout);
         break;
