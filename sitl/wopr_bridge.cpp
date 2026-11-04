@@ -515,6 +515,10 @@ public:
         fwcpp::sim::json_get_float(obj, "hover_throttle", plant.hover_throttle);
         fwcpp::sim::json_get_vector3(obj, "moment_inertia", plant.moment_inertia);
         fwcpp::sim::json_get_float(obj, "ground_friction", plant.ground_friction);
+        fwcpp::sim::json_get_float(obj, "ground_steering_wheelbase_m", plant.ground_steering_wheelbase_m);
+        fwcpp::sim::json_get_float(obj, "ground_steering_max_deg", plant.ground_steering_max_deg);
+        plant.ground_steering_wheelbase_m = fwcpp::math::constrain_value(plant.ground_steering_wheelbase_m, 0.0f, 30.0f);
+        plant.ground_steering_max_deg = fwcpp::math::constrain_value(plant.ground_steering_max_deg, 0.0f, 65.0f);
         fwcpp::sim::json_get_float(obj, "ground_brake_pitch_free", plant.ground_brake_pitch_free);
         fwcpp::sim::json_get_float(obj, "ground_brake_mu", plant.ground_brake_mu);
         plant.ground_brake_mu = fwcpp::math::constrain_value(plant.ground_brake_mu, 0.0f, 1.0f);
@@ -751,6 +755,14 @@ public:
             sim_.wheel_brake = mode_ == BridgeMode::kAuto && landing_item &&
                 landing_item->command == fwcpp::vehicle::MissionCommand::Land &&
                 plane_.is_landing_final_flare() ? 1.0f : 0.0f;
+            // Opted-in MANUAL taxi: rudder steers the nosewheel; throttle PWM
+            // below idle is a brake axis (1100=release, 800=full). Thrust stays
+            // idle there. AUTO takeoff/landing and other models are unchanged.
+            sim_.ground_steering_active = mode_ == BridgeMode::kManual && sim_.ground_steering_wheelbase_m > 0.0f;
+            sim_.ground_steering_input = (static_cast<float>(rc_pwm_[3])-1500.0f)/400.0f;
+            if (sim_.ground_steering_active) {
+                sim_.wheel_brake = fwcpp::math::constrain_value((1100.0f-static_cast<float>(rc_pwm_[2]))/300.0f, 0.0f, 1.0f);
+            }
             harness_.step(now_ms_, kDt);
             if (debug_ && ((now_ms_ % 5000u) == 0u || (plane_.is_landing_final_flare() && now_ms_ % 100u == 0u))) {
                 const fwcpp::tecs::Tecs::DebugState d = plane_.tecs.debug_state();

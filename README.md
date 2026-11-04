@@ -89,3 +89,38 @@ step's wheel deceleration,m/s²), REV_THR (signed reverse command,percent,otherw
 and ON_GROUND (post-step plant contact). Pre-step commands may disagree with the
 post-step contact bit during the transition tick. Assess actual pitch, vertical
 velocity and ground contact as well as demands when judging a flare.
+
+## WOPR manual taxi extension
+
+Models may opt into a simulation-only nosewheel constraint with
+`ground_steering_wheelbase_m > 0` and `ground_steering_max_deg > 0` (loader bounds:
+0..30 m and 0..65 degrees). Both default to zero. This is a bicycle approximation
+at the aircraft origin, not validated C130 wheel geometry or full tyre dynamics.
+
+In MANUAL, rudder PWM 1100..1900 commands left..right steering, with 1500 centered.
+The steering angle fades between 8 and 15 m/s; yaw is limited to 0.3 g lateral
+acceleration. It requires forward-only rolling ground contact, produces no yaw
+at rest, and leaves aerodynamic yaw unchanged at 15 m/s and above or in flight.
+AUTO takeoff and landing do not use this extension.
+The applied ground yaw rate is retained separately for the next AHRS sensor
+sample, because forward-only contact clears the physical integration gyro.
+This sensor rate resets on the next update and is not added again after liftoff.
+The binary STATE reply's `gyro_rps` still exposes the plant integration gyro,
+which the ground clamp clears; it can read zero during a constrained taxi turn.
+AHRS consumes `gyro_for_sensors()` instead. Assess taxi rotation using actual
+heading over time, not that integration-state diagnostic alone.
+
+On a model with positive steering wheelbase, MANUAL throttle PWM below 1100 is
+also a brake axis: 1100 releases, 950 is half, and 800 is full braking. Propulsion
+remains at idle below 1100. Brakes require `ground_brake_mu > 0`; physical tyre
+force is applied only on contact and cannot reverse the aircraft. Braking works
+while disarmed; propulsion still requires arming and safety-off. Switching out
+of MANUAL clears this brake command; the existing AUTO final-landing brake path
+is unchanged. `WHEEL_BRAK` is the command and `BRAKE_ACC` is the applied force.
+
+With `FWCPP_BRIDGE_MODEL_TEST=ON`, build `wopr_bridge_taxi_test` and run
+`ctest --test-dir build -R '^wopr_bridge_(model|mission|arming|taxi)$' --output-on-failure`.
+The taxi test exercises real bridge RC/mode handling, disabled models, airborne
+force gating, idle thrust, high-speed yaw parity, and an integrated 180-degree
+turn followed by a stop. It does not prove live terrain contact or obstacle
+clearance; validate wheel tracks and the full aircraft swept footprint separately.

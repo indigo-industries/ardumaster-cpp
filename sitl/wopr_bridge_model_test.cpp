@@ -15,6 +15,8 @@ struct ModelLoaderTestAccess {
                b.sim_.ground_brake_pitch_free == 1.0f &&
                b.sim_.prop_lapse_speed == 59.0f &&
                b.sim_.ground_brake_mu == 0.4f &&
+               b.sim_.ground_steering_wheelbase_m == 9.5f &&
+               b.sim_.ground_steering_max_deg == 65.0f &&
                b.sim_.ground_contact_drop_limit_m == 0.5f &&
                b.plane_.tecs.get_land_airspeed() == 18.0f &&
                b.plane_.aparm.ground_steer_alt == 7.0f &&
@@ -33,6 +35,8 @@ struct ModelLoaderTestAccess {
                b.sim_.ground_brake_pitch_free == 0.0f &&
                b.sim_.prop_lapse_speed == 0.0f &&
                b.sim_.ground_brake_mu == 0.0f &&
+               b.sim_.ground_steering_wheelbase_m == 0.0f &&
+               !b.sim_.ground_steering_active &&
                b.sim_.ground_contact_drop_limit_m == 0.0f &&
                b.sim_.wheel_brake == 0.0f &&
                b.plane_.tecs.get_land_airspeed() == -1.0f &&
@@ -207,6 +211,23 @@ int main(int argc, char** argv) {
     }
     idle.update(0,0,0,0,.02f);reverse.update(0,0,0,-.3f,.02f);
     if (!(reverse.velocity_ef.x < idle.velocity_ef.x && reverse.velocity_ef.x > 0)) {return 1;}
-    std::puts("PASS: model overrides/reset, brakes, terrain support, flare isolation/datum/exit and contact rollout");
+    // Taxi steering changes heading only with rolling contact and explicit
+    // opt-in; the same input must not rotate a parked or airborne aircraft.
+    for (int scenario=0;scenario<5;++scenario) {
+        fwcpp::sim::SimPlane sim;
+        sim.home.alt=0; sim.ground_level=0; sim.frame_height=0;
+        sim.ground_behavior=fwcpp::sim::GroundBehavior::kFwdOnly;
+        sim.position={0,0,scenario==1 ? -100.0f : 0.0f};
+        sim.velocity_ef={scenario==2 ? 0.0f : 3.0f,0,0};
+        sim.ground_steering_wheelbase_m=scenario==3 ? 0.0f : 9.5f;
+        sim.ground_steering_max_deg=65;sim.ground_steering_input=1;
+        sim.ground_steering_active=scenario!=4;
+        sim.update(0,0,0,0,.02f);
+        float r,p,y;sim.dcm.to_euler(&r,&p,&y);
+        if (scenario==0 ? !(y>.01f && y<.02f) : std::fabs(y)>1e-6f) {
+            std::fprintf(stderr,"taxi steering gate failed %d yaw=%f\n",scenario,y);return 1;
+        }
+    }
+    std::puts("PASS: model overrides/reset, taxi/contact gates, brakes, terrain support, flare isolation/datum/exit and contact rollout");
     return 0;
 }

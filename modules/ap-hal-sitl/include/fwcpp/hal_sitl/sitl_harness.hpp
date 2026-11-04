@@ -203,7 +203,7 @@ public:
         in.now_us = static_cast<std::uint64_t>(now_ms) * 1000ULL;
 
         // Gyro/accel - see file banner's own citation.
-        const math::Vector3f measured_gyro = sim_plane_.gyro + gyro_bias;
+        const math::Vector3f measured_gyro = sim_plane_.gyro_for_sensors() + gyro_bias;
         ahrs::GyroSample gyro_sample;
         gyro_sample.gyro = measured_gyro;
         gyro_sample.delta_angle = measured_gyro * dt;

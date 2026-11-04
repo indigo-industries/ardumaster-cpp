@@ -97,7 +97,9 @@
 //   - The launcher (have_launcher / launch_accel / launch_time /
 //     launch_start_ms) and ground-steering (have_steering, the
 //     gyro.z += steering * ... nose-wheel hack in Plane::update) hooks -
-//     test/debug airframe features, not core physics.
+//     test/debug airframe features, not core physics. The WOPR bridge has a
+//     separate, default-off low-speed bicycle steering extension below;
+//     it does not implement upstream's have_steering hook.
 //   - Frame-rate/timing bookkeeping: frame_time_us, time_advance,
 //     setup_frame_time, adjust_frame_time, sync_frame_time,
 //     lock_step_scheduled. This class takes an explicit dt per update()
@@ -875,6 +877,7 @@ public:
     // reverse_elevator_rudder/tailsitter/aerobatic/launcher) is skipped -
     // see file banner.
     void update(float aileron, float elevator, float rudder, float throttle, float dt) {
+        ground_steering_sensor_yaw_rate = 0.0f;
         // Upstream: Plane::update calls update_wind(input) FIRST, before
         // calculate_forces/update_dynamics (SIM_Plane.cpp:526) - reproduced
         // in the same order. Uses THIS tick's pre-integration on_ground()
@@ -954,7 +957,29 @@ public:
             accel_body.x -= std::copysign(brake_accel, vel_body.x);
         }
 
+        // Optional low-speed nosewheel constraint, driven only by the bridge's
+        // manual taxi input. Bicycle geometry; no yaw at rest or in flight.
+        // Forward-only ground dynamics consume this rate then clear it.
+        if (ground_steering_active && ground_steering_wheelbase_m > 0.0f &&
+            ground_behavior == GroundBehavior::kFwdOnly && on_ground()) {
+            const float speed = std::fmax(0.0f, (dcm.transposed() * velocity_ef).x);
+            if (speed < 15.0f) {
+                const float fade = math::constrain_value((15.0f-speed)/7.0f, 0.0f, 1.0f);
+                const float angle = math::radians(ground_steering_max_deg *
+                    math::constrain_value(ground_steering_input, -1.0f, 1.0f) * fade);
+                // Tyre grip bounds lateral acceleration as speed increases.
+                const float yaw = speed / ground_steering_wheelbase_m * std::tan(angle);
+                const float limit = 0.3f*kGravityMss/std::fmax(speed, 0.1f);
+                gyro.z = math::constrain_value(yaw, -limit, limit);
+                ground_steering_sensor_yaw_rate = gyro.z;
+                rot_accel.z = 0.0f;
+            } // Above taxi speed, preserve the existing aerodynamic yaw.
+        }
         update_dynamics(rot_accel, dt);
+        // Forward-only contact clears the integration gyro after applying yaw.
+        // Retain that applied rate for the next sensor sample. On liftoff the
+        // base integrator keeps gyro itself, so adding it again would double it.
+        if (!on_ground()) { ground_steering_sensor_yaw_rate = 0.0f; }
         // Refresh the geodetic Location from the freshly integrated NED
         // position. Every sibling plant ends its update() with this same
         // epilogue slot (SimMulticopter / SimQuadPlane / SimRover / ... :
@@ -1088,6 +1113,14 @@ public:
     // Speed-proportional ground drag (1/s). 0.3f = upstream's own constant,
     // bit-identical - see the on_ground() note in update().
     float ground_friction = 0.3f;
+    float ground_steering_wheelbase_m = 0.0f; // zero disables taxi extension
+    float ground_steering_max_deg = 0.0f;
+    float ground_steering_input = 0.0f;
+    bool ground_steering_active = false;
+    float ground_steering_sensor_yaw_rate = 0.0f; // prior contact step, rad/s
+    [[nodiscard]] math::Vector3f gyro_for_sensors() const {
+        return gyro + math::Vector3f{0.0f, 0.0f, ground_steering_sensor_yaw_rate};
+    }
     float ground_brake_pitch_free = 0.0f; // opt-in pitch dynamics only while braking
     float ground_brake_mu = 0.0f; // tyre/runway friction coefficient; opt-in model
     float wheel_brake = 0.0f;     // commanded fraction [0,1], never active in flight
