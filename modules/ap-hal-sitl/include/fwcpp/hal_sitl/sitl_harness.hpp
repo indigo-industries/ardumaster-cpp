@@ -290,7 +290,7 @@ public:
         const float aileron = plane_.srv_channels.get_output_scaled(srv::Function::kAileron) / vehicle::kServoMax;
         const float elevator = plane_.srv_channels.get_output_scaled(srv::Function::kElevator) / vehicle::kServoMax;
         const float rudder = plane_.srv_channels.get_output_scaled(srv::Function::kRudder) / vehicle::kServoMax;
-        const float throttle = plane_.srv_channels.get_output_scaled(srv::Function::kThrottle) / 100.0f;
+        const float throttle = plane_.effective_throttle_pct() / 100.0f;
         sim_plane_.update(aileron, elevator, rudder, throttle, dt);
     }
 

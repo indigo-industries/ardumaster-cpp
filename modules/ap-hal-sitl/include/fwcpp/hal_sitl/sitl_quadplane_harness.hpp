@@ -170,7 +170,7 @@ public:
         const float aileron = plane_.srv_channels.get_output_scaled(srv::Function::kAileron) / vehicle::kServoMax;
         const float elevator = plane_.srv_channels.get_output_scaled(srv::Function::kElevator) / vehicle::kServoMax;
         const float rudder = plane_.srv_channels.get_output_scaled(srv::Function::kRudder) / vehicle::kServoMax;
-        const float throttle = plane_.srv_channels.get_output_scaled(srv::Function::kThrottle) / 100.0f;
+        const float throttle = plane_.effective_throttle_pct() / 100.0f;
         input.servos[0] = static_cast<std::uint16_t>(math::constrain_value(1500.0f + aileron * 500.0f, 1000.0f, 2000.0f));
         input.servos[1] = static_cast<std::uint16_t>(math::constrain_value(1500.0f + elevator * 500.0f, 1000.0f, 2000.0f));
         input.servos[2] = static_cast<std::uint16_t>(math::constrain_value(1000.0f + throttle * 1000.0f, 1000.0f, 2000.0f));

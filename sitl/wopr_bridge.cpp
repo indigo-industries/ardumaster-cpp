@@ -906,7 +906,9 @@ public:
             plane_.armed = true;
             plane_.hal.rc_output.force_safety_off();
         } else {
-            plane_.armed = false;
+            plane_.disarm();
+            // Idempotent disarm must restore safety even if already disarmed.
+            plane_.hal.rc_output.force_safety_on();
         }
         return Status::kOk;
     }
@@ -1081,7 +1083,7 @@ public:
             plane_.srv_channels.get_output_scaled(fwcpp::srv::Function::kElevator) / fwcpp::vehicle::kServoMax;
         r.servo_norm[2] =
             plane_.srv_channels.get_output_scaled(fwcpp::srv::Function::kRudder) / fwcpp::vehicle::kServoMax;
-        r.servo_norm[3] = plane_.srv_channels.get_output_scaled(fwcpp::srv::Function::kThrottle) / 100.0f;
+        r.servo_norm[3] = plane_.effective_throttle_pct() / 100.0f;
         r.vtol_lift = vtol_ ? last_vtol_lift_ : 0.0f;
         r.vtol_hover_cmd = vtol_ ? qsim_.frame().hover_command() : 0.0f;
         r.mission_count = static_cast<std::uint16_t>(plane_.mission.size());
@@ -1440,7 +1442,7 @@ inline void send_vfr_hud(GcsLink& g, const Bridge& b) {
         hdg_deg += 360.0f;
     }
     const float throttle_pct =
-        b.plane().srv_channels.get_output_scaled(fwcpp::srv::Function::kThrottle);
+        b.plane().effective_throttle_pct();
     std::uint8_t p[20] = {};
     fwcpp::gcs::write_f32_le(p, s.airspeed);
     fwcpp::gcs::write_f32_le(p + 4, groundspeed);
@@ -1477,7 +1479,7 @@ inline void send_landing_diagnostics(GcsLink& g, const Bridge& b) {
     send("ELEVATOR", b.plane().srv_channels.get_output_scaled(fwcpp::srv::Function::kElevator) / 4500.0f);
     send("WHEEL_BRAK", b.sim().wheel_brake);
     send("BRAKE_ACC", b.sim().last_brake_accel);
-    send("REV_THR", std::min(0.0f, b.plane().srv_channels.get_output_scaled(fwcpp::srv::Function::kThrottle)));
+    send("REV_THR", std::min(0.0f, b.plane().effective_throttle_pct()));
     send("ON_GROUND", b.sim().on_ground() ? 1.0f : 0.0f);
 }
 

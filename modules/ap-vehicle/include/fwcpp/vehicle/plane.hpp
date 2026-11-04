@@ -5092,6 +5092,13 @@ public:
         return armed && hal.rc_output.safety_state() == hal::SafetyState::kArmed;
     }
 
+    // The SITL plant bypasses HAL PWM output. Apply its propulsion interlock
+    // explicitly, including negative (reverse) thrust; leave surface control
+    // and unpowered aircraft dynamics running while disarmed.
+    [[nodiscard]] float effective_throttle_pct() const {
+        return is_armed_and_safety_off() ? srv_channels.get_output_scaled(srv::Function::kThrottle) : 0.0f;
+    }
+
     // upstream: AP_Arming_Plane::rc_received_if_enabled_check()
     // (AP_Arming_Plane.cpp) - see file banner's "RC_RECEIVED_IF_ENABLED_
     // CHECK()" note for the real body this reproduces and the two
