@@ -9,6 +9,7 @@ struct ModelLoaderTestAccess {
     static bool overrides(Bridge& b) {
         return b.sim_.prop_lapse_speed == 59.0f &&
                b.sim_.ground_brake_mu == 0.4f &&
+               b.sim_.ground_contact_drop_limit_m == 0.5f &&
                b.plane_.tecs.get_land_airspeed() == 18.0f &&
                b.plane_.aparm.ground_steer_alt == 7.0f &&
                b.plane_.mode_takeoff.ground_pitch == 2.0f &&
@@ -20,6 +21,7 @@ struct ModelLoaderTestAccess {
     static bool defaults(Bridge& b) {
         return b.sim_.prop_lapse_speed == 0.0f &&
                b.sim_.ground_brake_mu == 0.0f &&
+               b.sim_.ground_contact_drop_limit_m == 0.0f &&
                b.sim_.wheel_brake == 0.0f &&
                b.plane_.tecs.get_land_airspeed() == -1.0f &&
                b.plane_.aparm.ground_steer_alt == 0.0f &&
@@ -74,6 +76,23 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "wheel brake contact gating failed\n"); return 1;
         }
     }
-    std::puts("PASS: model overrides/reset and grounded-only wheel braking");
+    for (int scenario = 0; scenario < 6; ++scenario) {
+        fwcpp::sim::SimPlane sim;
+        sim.ground_behavior = fwcpp::sim::GroundBehavior::kFwdOnly;
+        sim.ground_contact_drop_limit_m = scenario == 5 ? 0.0f : 0.5f;
+        sim.home.alt = 0; sim.ground_level = 0; sim.frame_height = 0;
+        sim.position = {10,20, scenario == 1 ? -10.0f : 0.0f};
+        sim.velocity_ef = {30,0, scenario == 2 ? -0.01f : 0.0f};
+        const auto old_pos = sim.position; const auto old_vel = sim.velocity_ef;
+        const float surface = scenario == 3 ? -1.0f : scenario == 4 ? 0.2f : -0.2f;
+        sim.set_terrain_height(surface);
+        const float expected_z = scenario == 0 ? 0.2f : old_pos.z;
+        if (sim.position.z != expected_z || sim.position.x != old_pos.x || sim.position.y != old_pos.y ||
+            sim.velocity_ef.x != old_vel.x || sim.velocity_ef.z != old_vel.z || sim.ground_level != surface ||
+            (scenario == 0 && !sim.on_ground())) {
+            std::fprintf(stderr, "terrain support gating failed: scenario %d\n",scenario); return 1;
+        }
+    }
+    std::puts("PASS: model overrides/reset, ground-only brakes and bounded terrain support");
     return 0;
 }

@@ -517,6 +517,8 @@ public:
         fwcpp::sim::json_get_float(obj, "ground_friction", plant.ground_friction);
         fwcpp::sim::json_get_float(obj, "ground_brake_mu", plant.ground_brake_mu);
         plant.ground_brake_mu = fwcpp::math::constrain_value(plant.ground_brake_mu, 0.0f, 1.0f);
+        fwcpp::sim::json_get_float(obj, "ground_contact_drop_limit_m", plant.ground_contact_drop_limit_m);
+        plant.ground_contact_drop_limit_m = fwcpp::math::constrain_value(plant.ground_contact_drop_limit_m, 0.0f, 0.5f);
         // Propeller thrust lapse (m/s). 0 = upstream jet-style constant thrust.
         // >0 = thrust = T_static * min(1, prop_lapse_speed / V): full static
         // thrust up to that speed, then ~1/V (constant shaft power). For a
@@ -619,8 +621,8 @@ public:
             // ground. When the host stops sampling (no resident tiles), the
             // LAST surface is kept — a stale-but-nearby ground beats snapping
             // back to the start-fix flat earth mid-flight.
-            sim_.ground_level = terrain_hae_m_;
-            qsim_.ground_level = terrain_hae_m_;
+            sim_.set_terrain_height(terrain_hae_m_);
+            qsim_.set_terrain_height(terrain_hae_m_);
         }
         std::uint16_t n = p.n_steps;
         if (n == 0) {

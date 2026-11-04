@@ -1129,6 +1129,20 @@ public:
     float ground_friction = 0.3f;
     float ground_brake_mu = 0.0f; // tyre/runway friction coefficient; opt-in model
     float wheel_brake = 0.0f;     // commanded fraction [0,1], never active in flight
+    float ground_contact_drop_limit_m = 0.0f; // opt-in support across small sampled surface drops
+    void set_terrain_height(float hae_m) {
+        const float drop = ground_level - hae_m;
+        // Updating a sampled heightmap before the controller must not turn a
+        // supported wheel into free flight on every millimetre downward step.
+        // Follow only small drops while supported and not moving upward. Lift
+        // from the next aerodynamic integration still releases contact normally.
+        // Airborne motion, large ledges and rising-ground collision are untouched.
+        if (ground_behavior == GroundBehavior::kFwdOnly && on_ground() &&
+            velocity_ef.z >= 0.0f && drop > 0.0f && drop <= ground_contact_drop_limit_m) {
+            position.z += drop;
+        }
+        ground_level = hae_m;
+    }
     std::uniform_real_distribution<float> airspeed_noise_dist_{-1.0f, 1.0f};
     WindConfig wind_config;
     FrameConfig frame_config;
