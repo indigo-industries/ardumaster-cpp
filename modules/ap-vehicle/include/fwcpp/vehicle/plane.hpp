@@ -3144,6 +3144,8 @@ struct FixedWingTunables {
     // "CPP-041 ADDENDUM" file banner. All three defaults are AP_Landing.cpp's
     // real AP_GROUPINFO defaults (read directly), not invented.
     float flare_alt_m = 3.0f;  // LAND_FLARE_ALT / AP_Landing::flare_alt, m
+    float landing_rollout_pitch_rate = 0.0f; // opt-in tricycle nose-lowering demand, deg/s;0 disables
+    float landing_reverse_throttle_pct = 0.0f; // opt-in prop reverse magnitude [0,100]
     float flare_sec = 2.0f;    // LAND_FLARE_SEC / AP_Landing::flare_sec, s
     float flare_aim_pct = 50.0f; // LAND_FLARE_AIM / AP_Landing::flare_effectivness_pct, %
 
@@ -5203,8 +5205,10 @@ public:
     // wrapping struct (unlike TakeoffState): see that same addendum's
     // "LANDINGSTATE - MINIMAL BY DESIGN" note for why a bare field is the
     // real, traced equivalent, not a simplification.
-    enum class LandingStage : std::uint8_t { Normal, Approach, Final };
+    enum class LandingStage : std::uint8_t { Normal, Approach, Final, Rollout };
     LandingStage landing_stage = LandingStage::Normal;
+    float landing_rollout_pitch_deg = 0.0f;
+    float landing_reverse_output_pct = 0.0f;
 
     // See file banner's "GROUND_MODE / REVERSED_THROTTLE" note.
     bool ground_mode = false;
@@ -6520,6 +6524,9 @@ public:
     //   - `type_slope_flags.post_stats = false;` - see "CPP-041 ADDENDUM"'s
     //     "LANDINGSTATE - MINIMAL BY DESIGN" note (no field to reset).
     void do_land() {
+        tecs.reset_landing();
+        landing_rollout_pitch_deg = 0.0f;
+        landing_reverse_output_pct = 0.0f;
         const MissionItem* item = mission.current();
         if (item == nullptr) {
             return;
@@ -6647,16 +6654,41 @@ public:
         return math::constrain_value(desired_roll_cd, -level_roll_limit_cd, level_roll_limit_cd);
     }
 
-    // upstream: AP_Landing::type_slope_is_flaring()/type_slope_is_throttle_
-    // suppressed() (AP_Landing_Slope.cpp) - VERIFIED IDENTICAL by reading
-    // both functions side by side: both are simply `type_slope_stage ==
-    // FINAL`, the SAME condition, not two independent flags (the ticket's
-    // own instruction to check this directly, confirmed). One function
-    // here serves both upstream call sites (mode_auto.cpp's `is_throttle_
-    // suppressed()` throttle-zero gate, and CPP-040's TecsLandingInputs::
-    // is_flaring feed - see verify_land()'s and update_auto_speed_height()'s
-    // own call sites, below).
-    [[nodiscard]] bool is_landing_final_flare() const { return landing_stage == LandingStage::Final; }
+    // Upstream FINAL suppresses throttle. The opt-in tricycle Rollout stage
+    // retains that suppression and braking after contact. TECS is_flaring is
+    // supplied separately and is true only in Final. Rollout is latched and
+    // must never be used as a substitute for current weight-on-wheels.
+    [[nodiscard]] bool is_landing_final_flare() const { return landing_stage == LandingStage::Final || landing_stage == LandingStage::Rollout; }
+
+    // Tricycle rollout opt-in: command the elevator to lower the nose after
+    // measured wheel contact. Never alter pose/velocity or synthesize contact.
+    void update_landing_rollout(const StabilizeInputs& in) {
+        if (aparm.landing_rollout_pitch_rate <= 0.0f && aparm.landing_reverse_throttle_pct <= 0.0f) { return; }
+        if (landing_stage == LandingStage::Final && in.on_ground_valid && in.on_ground) {
+            landing_stage = LandingStage::Rollout;
+            landing_rollout_pitch_deg = std::max(0.0f, math::degrees(ahrs->get_pitch()));
+        }
+        if (landing_stage == LandingStage::Rollout && aparm.landing_rollout_pitch_rate > 0.0f) {
+            landing_rollout_pitch_deg = std::max(0.0f, landing_rollout_pitch_deg -
+                aparm.landing_rollout_pitch_rate * std::max(0.0f, in.dt));
+            nav_pitch_cd = static_cast<std::int32_t>(landing_rollout_pitch_deg * 100.0f);
+        }
+    }
+
+    // Model-opted-in reverse propeller command. Ground contact and arming are
+    // required each tick; latch of Rollout alone is insufficient. Ramp in at
+    // 20 percentage points/s, fade below10m/s, and cut at5m/s to prevent backing.
+    float landing_reverse_throttle(const StabilizeInputs& in) {
+        const float speed = std::hypot(in.true_velocity_ned.x, in.true_velocity_ned.y);
+        if (!armed || landing_stage != LandingStage::Rollout || !in.on_ground_valid || !in.on_ground || speed <= 5.0f) {
+            landing_reverse_output_pct = 0.0f;
+            return 0.0f;
+        }
+        const float target = math::constrain_value(aparm.landing_reverse_throttle_pct, 0.0f, 100.0f) *
+            math::constrain_value((speed - 5.0f) / 5.0f, 0.0f, 1.0f);
+        landing_reverse_output_pct = std::min(target, landing_reverse_output_pct + 20.0f * std::max(0.0f, in.dt));
+        return -landing_reverse_output_pct;
+    }
 
     // upstream: AP_Landing::type_slope_verify_land() (AP_Landing_Slope.cpp),
     // read in full - the in-scope subset only (NORMAL->APPROACH->FINAL,
@@ -6768,7 +6800,7 @@ public:
         // the configured TECS_LAND_ARSPD and disabled-value fallback.
         // The separate PREFLARE airspeed override remains unported.
         const MissionItem* current_item = mission.current();
-        const bool is_land_item = current_item != nullptr && current_item->command == MissionCommand::Land;
+        const bool is_land_item = control_mode == &mode_auto && current_item != nullptr && current_item->command == MissionCommand::Land;
 
         // upstream: Plane::mode_auto_target_airspeed_cm()'s real fallback
         // (no DO_CHANGE_SPEED override in this slice - see above), then
@@ -6799,8 +6831,13 @@ public:
         // every non-Land-FINAL tick reproduces this function's own
         // pre-CPP-041 behavior exactly (CPP-040's own "ZERO changes" note).
         tecs::TecsLandingInputs landing_in;
-        if (is_land_item && is_landing_final_flare()) {
+        if (is_land_item) {
+            tecs.set_path_proportion(current_loc.line_path_proportion(prev_WP_loc, next_WP_loc));
+        }
+        if (is_land_item && landing_stage == LandingStage::Final) {
             landing_in.is_flaring = true;
+            landing_in.height_above_land_valid = true;
+            landing_in.height_above_land_m = (current_loc.alt - next_WP_loc.alt) * 0.01f;
             landing_in.distance_beyond_land_wp =
                 current_loc.past_interval_finish_line(prev_WP_loc, next_WP_loc) ? current_loc.get_distance(next_WP_loc) : 0.0f;
         }
@@ -7385,6 +7422,10 @@ public:
 
         // upstream: "exit previous mode".
         old_mode.exit();
+        tecs.reset_landing();
+        landing_stage = LandingStage::Normal;
+        landing_rollout_pitch_deg = 0.0f;
+        landing_reverse_output_pct = 0.0f;
         return true;
     }
 

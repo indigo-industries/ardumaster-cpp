@@ -1,5 +1,13 @@
 #pragma once
 
+// 2026-11-04 landing update (supersedes the historical exclusions below):
+// final flare selects LAND_TCONST/LAND_DAMP and LAND_SPDWGT, with path-based
+// speed-weight fade when LAND_SPDWGT is negative. Approach retains its prior
+// control law; this is not full AP_Landing parity. The flare blend accepts
+// height above the landing target. Home-altitude offsets do not shift that
+// target-relative entry height. Mode/mission changes reset the landing state.
+// Source: ArduPilot Plane-4.7.0 libraries/AP_TECS/AP_TECS.cpp.
+
 // Port of AP_TECS (Total Energy Control System). CPP-029, slice 1.
 // Written by Paul Riseborough 2013. Upstream: AP_TECS/AP_TECS.h,
 // AP_TECS.cpp (Plane-4.7.0, ~514/~1676 lines) - read directly from the
@@ -486,6 +494,8 @@ struct TecsLandingInputs {
     // stage"/is_doing_auto_land. A future phase-2 ticket derives this from
     // a real AP_Landing-equivalent.
     bool is_flaring = false;
+    bool height_above_land_valid = false;
+    float height_above_land_m = 0.0f;
 
     // upstream: update_pitch_throttle()'s `distance_beyond_land_wp`
     // parameter / the `_distance_beyond_land_wp` member it is copied into
@@ -537,6 +547,9 @@ public:
         // CPP-040: flare height-rate-demand blend tunables - see file
         // banner's "CPP-040 ADDENDUM". Defaults are the real var_info[]
         // defaults (AP_TECS.cpp, read directly), not invented.
+        float land_spd_weight = -1.0f;        // LAND_SPDWGT, final-flare subset
+        float land_time_const = 2.0f;          // LAND_TCONST
+        float land_damp = 0.5f;                // LAND_DAMP
         float land_sink = 0.25f;               // LAND_SINK
         float land_sink_rate_change = 0.0f;    // LAND_SRC
         float flare_holdoff_hgt = 1.0f;        // FLARE_HGT
@@ -669,6 +682,7 @@ public:
             hgt_dem_in_ = hgt_dem_in_raw_;
         }
 
+        flaring_ = landing.is_flaring;
         update_throttle_limits();
         update_pitch_limits();
 
@@ -752,6 +766,7 @@ public:
         float max_sink_scaler = 0.0f;
         float tas_dem_adj = 0.0f;      // demanded TAS after limits (m/s)
         float pitch_dem_unc = 0.0f;    // unconstrained pitch demand (rad)
+        float active_time_const = 0.0f;
         float throttle_dem = 0.0f;
         int thr_clip = 0;              // ClipStatus: 0 none, min/max otherwise
     };
@@ -765,6 +780,7 @@ public:
         d.max_sink_scaler = max_sink_scaler_;
         d.tas_dem_adj = tas_dem_adj_;
         d.pitch_dem_unc = pitch_dem_unc_;
+        d.active_time_const = time_constant();
         d.throttle_dem = throttle_dem_;
         d.thr_clip = static_cast<int>(thr_clip_status_);
         return d;
@@ -855,6 +871,7 @@ public:
 
     // Reset on next loop.
     void reset() { need_reset_ = true; }
+    void reset_landing() { flaring_ = false; flare_initialised_ = false; path_proportion_ = 0.0f; }
 
     // upstream: AP_TECS::offset_altitude(). CPP-040 adds the three
     // flare-state offsets (AP_TECS.cpp:1652-1654) this port's pre-CPP-040
@@ -867,7 +884,7 @@ public:
     void offset_altitude(float alt_offset) {
         flare_hgt_dem_ideal_ -= alt_offset;
         flare_hgt_dem_adj_ -= alt_offset;
-        hgt_at_start_of_flare_ -= alt_offset;
+        if (!flare_height_is_target_relative_) { hgt_at_start_of_flare_ -= alt_offset; }
         hgt_dem_in_prev_ -= alt_offset;
         hgt_dem_lpf_ -= alt_offset;
         hgt_dem_rate_ltd_ -= alt_offset;
@@ -1000,9 +1017,11 @@ private:
         bool reset = true;
     };
 
-    // upstream: timeConstant() - is_doing_auto_land branch dropped (see
-    // file banner), always the plain TIME_CONST floor.
-    [[nodiscard]] float time_constant() const { return (gains_.time_const < 0.1f) ? 0.1f : gains_.time_const; }
+    // Scoped landing support: LAND_TCONST applies during final flare only.
+    // Approach retains TIME_CONST; this is narrower than upstream auto-land.
+    [[nodiscard]] float time_constant() const {
+        return std::max(0.1f, flaring_ ? gains_.land_time_const : gains_.time_const);
+    }
 
     // upstream: _get_i_gain() - TAKEOFF/is_doing_auto_land branches
     // dropped (see file banner); collapses to the plain integrator gain.
@@ -1229,10 +1248,12 @@ private:
             hgt_dem_rate_ltd_ = height_;
             hgt_dem_in_prev_ = height_;
 
+            const float flare_height = landing.height_above_land_valid ? landing.height_above_land_m : hgt_afe;
             if (!flare_initialised_) {
                 flare_hgt_dem_adj_ = hgt_dem_;
                 flare_hgt_dem_ideal_ = height_;
-                hgt_at_start_of_flare_ = hgt_afe;
+                hgt_at_start_of_flare_ = flare_height;
+                flare_height_is_target_relative_ = landing.height_above_land_valid;
                 hgt_rate_dem_at_flare_entry_ = hgt_rate_dem_;
                 flare_initialised_ = true;
             }
@@ -1245,7 +1266,7 @@ private:
             // bring it in linearly with height.
             float p;
             if (hgt_at_start_of_flare_ > gains_.flare_holdoff_hgt) {
-                p = math::constrain_value((hgt_at_start_of_flare_ - hgt_afe) /
+                p = math::constrain_value((hgt_at_start_of_flare_ - flare_height) /
                                                (hgt_at_start_of_flare_ - gains_.flare_holdoff_hgt),
                                            0.0f, 1.0f);
             } else {
@@ -1443,6 +1464,10 @@ private:
             ske_weighting_ = 0.0f;
         } else if (flags_.underspeed || flags_.is_gliding) {
             ske_weighting_ = 2.0f;
+        } else if (flaring_) {
+            const float weight = gains_.land_spd_weight < 0.0f
+                ? gains_.spd_weight * (1.0f - path_proportion_) : gains_.land_spd_weight;
+            ske_weighting_ = math::constrain_value(weight, 0.0f, 2.0f);
         }
 
         float spe_weighting = 2.0f - ske_weighting_;
@@ -1469,7 +1494,7 @@ private:
         const float sebdot_est = spedot_ * spe_weighting - skedot_ * ske_weighting_;
         const float sebdot_error = sebdot_dem - sebdot_est;
 
-        const float pitch_damp = gains_.ptch_damp;
+        const float pitch_damp = flaring_ ? gains_.land_damp : gains_.ptch_damp;
         const float sebdot_dem_total = sebdot_dem + sebdot_error * pitch_damp;
 
         // inverse of gain from SEB to pitch angle.
@@ -1689,6 +1714,8 @@ private:
     // _hgt_rate_dem_at_flare_entry (AP_TECS.h ~298-299/406-408/429). See
     // file banner's "CPP-040 ADDENDUM" and update_height_demand()'s flare
     // arm for how these are seeded/consumed.
+    bool flaring_ = false;
+    bool flare_height_is_target_relative_ = false;
     bool flare_initialised_ = false;
     float flare_hgt_dem_adj_ = 0.0f;
     float flare_hgt_dem_ideal_ = 0.0f;
@@ -1963,9 +1990,12 @@ enum class TecsGroupIdx : std::uint8_t {
     kSpdWeight = 9,
     kPtchDamp = 10,
     kSinkMax = 11,
+    kLandSpdWeight = 14,
     kPitchMax = 15,
     kPitchMin = 16,
     kLandSink = 17,
+    kLandTconst = 18,
+    kLandDamp = 19,
     kLandSrc = 22,
     kSynAirspeed = 27,
     kPtchFfV0 = 29,
@@ -2005,7 +2035,7 @@ enum class TecsGroupIdx : std::uint8_t {
         info.type = static_cast<std::uint8_t>(type);
         return info;
     };
-    static const std::array<GroupInfo, 23> table = {{
+    static const std::array<GroupInfo, 26> table = {{
         entry("CLMB_MAX", offsetof(Gains, max_climb_rate), 5.0f, TecsGroupIdx::kClmbMax, VarType::Float),
         entry("SINK_MIN", offsetof(Gains, min_sink_rate), 2.0f, TecsGroupIdx::kSinkMin, VarType::Float),
         entry("TIME_CONST", offsetof(Gains, time_const), 5.0f, TecsGroupIdx::kTimeConst, VarType::Float),
@@ -2021,6 +2051,9 @@ enum class TecsGroupIdx : std::uint8_t {
         entry("PITCH_MAX", offsetof(Gains, pitch_max), 15.0f, TecsGroupIdx::kPitchMax, VarType::Float), // FINDING #3: real upstream AP_Int8
         entry("PITCH_MIN", offsetof(Gains, pitch_min), 0.0f, TecsGroupIdx::kPitchMin, VarType::Float),  // FINDING #3: real upstream AP_Int8
         entry("LAND_SINK", offsetof(Gains, land_sink), 0.25f, TecsGroupIdx::kLandSink, VarType::Float),
+        entry("LAND_SPDWGT", offsetof(Gains, land_spd_weight), -1.0f, TecsGroupIdx::kLandSpdWeight, VarType::Float),
+        entry("LAND_TCONST", offsetof(Gains, land_time_const), 2.0f, TecsGroupIdx::kLandTconst, VarType::Float),
+        entry("LAND_DAMP", offsetof(Gains, land_damp), 0.5f, TecsGroupIdx::kLandDamp, VarType::Float),
         entry("LAND_SRC", offsetof(Gains, land_sink_rate_change), 0.0f, TecsGroupIdx::kLandSrc, VarType::Float),
         entry("SYNAIRSPEED", offsetof(Gains, use_synthetic_airspeed), 0.0f, TecsGroupIdx::kSynAirspeed, VarType::Int8),
         entry("PTCH_FF_V0", offsetof(Gains, pitch_ff_v0), 12.0f, TecsGroupIdx::kPtchFfV0, VarType::Float),

@@ -9,5 +9,11 @@
   "nav_l1_period": 40.0,
   "ground_brake_mu": 0.4,
   "ground_contact_drop_limit_m": 0.5,
-  "land_src": 0.125
+  "land_src": 0.125,
+  "land_time_const": 3.25,
+  "land_damp": 0.8,
+  "land_spd_weight": 0.4,
+  "landing_rollout_pitch_rate": 1.0,
+  "landing_reverse_throttle_pct": 30.0,
+  "ground_brake_pitch_free": 1.0
 }

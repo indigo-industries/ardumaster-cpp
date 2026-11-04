@@ -515,6 +515,7 @@ public:
         fwcpp::sim::json_get_float(obj, "hover_throttle", plant.hover_throttle);
         fwcpp::sim::json_get_vector3(obj, "moment_inertia", plant.moment_inertia);
         fwcpp::sim::json_get_float(obj, "ground_friction", plant.ground_friction);
+        fwcpp::sim::json_get_float(obj, "ground_brake_pitch_free", plant.ground_brake_pitch_free);
         fwcpp::sim::json_get_float(obj, "ground_brake_mu", plant.ground_brake_mu);
         plant.ground_brake_mu = fwcpp::math::constrain_value(plant.ground_brake_mu, 0.0f, 1.0f);
         fwcpp::sim::json_get_float(obj, "ground_contact_drop_limit_m", plant.ground_contact_drop_limit_m);
@@ -556,6 +557,8 @@ public:
         // Landing sidecars use the same AP_Landing units as FixedWingTunables.
         fwcpp::sim::json_get_float(obj, "flare_alt_m", plane_.aparm.flare_alt_m);
         fwcpp::sim::json_get_float(obj, "flare_sec", plane_.aparm.flare_sec);
+        fwcpp::sim::json_get_float(obj, "landing_rollout_pitch_rate", plane_.aparm.landing_rollout_pitch_rate);
+        fwcpp::sim::json_get_float(obj, "landing_reverse_throttle_pct", plane_.aparm.landing_reverse_throttle_pct);
         fwcpp::sim::json_get_float(obj, "yaw2srv_damp", plane_.yaw_controller.mutable_gains().k_d);
         // TECS holds its OWN by-value copy of the airframe params, taken at
         // construction — mirror the envelope into it or every tas demand is
@@ -578,6 +581,9 @@ public:
         fwcpp::sim::json_get_float(obj, "tecs_thr_damp", tg.thr_damp);
         fwcpp::sim::json_get_float(obj, "tecs_ptch_damp", tg.ptch_damp);
         fwcpp::sim::json_get_float(obj, "tecs_integ_gain", tg.integ_gain);
+        fwcpp::sim::json_get_float(obj, "land_spd_weight", tg.land_spd_weight);
+        fwcpp::sim::json_get_float(obj, "land_time_const", tg.land_time_const);
+        fwcpp::sim::json_get_float(obj, "land_damp", tg.land_damp);
         fwcpp::sim::json_get_float(obj, "land_sink", tg.land_sink);
         fwcpp::sim::json_get_float(obj, "land_airspeed", tg.land_airspeed);
         fwcpp::sim::json_get_float(obj, "land_src", tg.land_sink_rate_change);
@@ -746,13 +752,19 @@ public:
                 landing_item->command == fwcpp::vehicle::MissionCommand::Land &&
                 plane_.is_landing_final_flare() ? 1.0f : 0.0f;
             harness_.step(now_ms_, kDt);
-            if (debug_ && (now_ms_ % 5000u) == 0u) {
+            if (debug_ && ((now_ms_ % 5000u) == 0u || (plane_.is_landing_final_flare() && now_ms_ % 100u == 0u))) {
                 const fwcpp::tecs::Tecs::DebugState d = plane_.tecs.debug_state();
                 std::printf("TECSDBG t=%.1f h=%.1f hdem_in=%.1f hdem_ltd=%.1f hdem=%.1f hrate=%.2f "
                             "cscale=%.4f sscale=%.4f tasdem=%.1f pitchdem=%.1f thrdem=%.2f clip=%d\n",
                             now_ms_ / 1000.0f, -sim_.position.z, d.hgt_dem_in, d.hgt_dem_rate_ltd,
                             d.hgt_dem, d.hgt_rate_dem, d.max_climb_scaler, d.max_sink_scaler,
                             d.tas_dem_adj, d.pitch_dem_unc * 57.2958f, d.throttle_dem, d.thr_clip);
+                std::fflush(stdout);
+                float rr=0, pp=0, yy=0; sim_.dcm.to_euler(&rr,&pp,&yy);
+                std::printf("LANDDBG t=%.2f true=%.3f ahrs=%.3f nav=%.3f elev=%.4f gyro=%.4f brake=%.3f normal=%.3f ground=%d hagl=%.4f terrain=%.3f vz=%.3f\n",
+                    now_ms_/1000.0f,fwcpp::math::degrees(pp),fwcpp::math::degrees(plane_.ahrs->get_pitch()),plane_.nav_pitch_cd*.01f,
+                    plane_.srv_channels.get_output_scaled(fwcpp::srv::Function::kElevator)/4500.0f,sim_.gyro.y,
+                    sim_.last_brake_accel,sim_.last_normal_accel,sim_.on_ground(),sim_.hagl(),sim_.ground_level,sim_.velocity_ef.z);
                 std::fflush(stdout);
             }
         }
@@ -1435,8 +1447,38 @@ inline void send_vfr_hud(GcsLink& g, const Bridge& b) {
     fwcpp::gcs::write_f32_le(p + 8, static_cast<float>(s.get_location().alt) * 0.01f);
     fwcpp::gcs::write_f32_le(p + 12, -s.velocity_ef.z);
     fwcpp::gcs::write_u16_le(p + 16, static_cast<std::uint16_t>(static_cast<std::int16_t>(hdg_deg)));
-    fwcpp::gcs::write_u16_le(p + 18, static_cast<std::uint16_t>(throttle_pct));
+    // VFR_HUD throttle is unsigned0..100. Signed reverse is sent separately.
+    fwcpp::gcs::write_u16_le(p + 18, static_cast<std::uint16_t>(fwcpp::math::constrain_value(throttle_pct, 0.0f, 100.0f)));
     send_frame(g, fwcpp::gcs::kMsgIdVfrHud, p, sizeof(p));
+}
+
+inline void send_landing_diagnostics(GcsLink& g, const Bridge& b) {
+    const auto d = b.plane().tecs.debug_state();
+    auto send = [&](const char* name, float value) {
+        std::uint8_t p[18] = {};
+        fwcpp::gcs::write_u32_le(p, b.sim_time_ms());
+        fwcpp::gcs::write_f32_le(p + 4, value);
+        std::memcpy(p + 8, name, std::min(std::strlen(name), std::size_t{10}));
+        send_frame(g, fwcpp::gcs::kMsgIdNamedValueFloat, p, sizeof(p));
+    };
+    const auto* item = b.plane().mission.current();
+    const bool active = b.current_mode() == BridgeMode::kAuto && item &&
+        item->command == fwcpp::vehicle::MissionCommand::Land;
+    send("LAND_ACT", active ? 1.0f : 0.0f);
+    send("FLARE", active && b.plane().landing_stage == fwcpp::vehicle::Plane::LandingStage::Final ? 1.0f : 0.0f);
+    send("ROLLOUT", active && b.plane().landing_stage == fwcpp::vehicle::Plane::LandingStage::Rollout ? 1.0f : 0.0f);
+    send("NAV_PITCH", b.plane().nav_pitch_cd * 0.01f);
+    send("LAND_HGT", active ? (b.plane().current_loc.alt - b.plane().next_WP_loc.alt) * 0.01f : 0.0f);
+    send("SINK_EST", -b.plane().tecs.get_climb_rate());
+    send("SINK_DEM", -d.hgt_rate_dem);
+    send("PITCH_DEM", b.plane().tecs.get_pitch_demand() * 0.01f);
+    send("TECS_TC", d.active_time_const);
+    send("AHRS_PITCH", fwcpp::math::degrees(b.plane().ahrs->get_pitch()));
+    send("ELEVATOR", b.plane().srv_channels.get_output_scaled(fwcpp::srv::Function::kElevator) / 4500.0f);
+    send("WHEEL_BRAK", b.sim().wheel_brake);
+    send("BRAKE_ACC", b.sim().last_brake_accel);
+    send("REV_THR", std::min(0.0f, b.plane().srv_channels.get_output_scaled(fwcpp::srv::Function::kThrottle)));
+    send("ON_GROUND", b.sim().on_ground() ? 1.0f : 0.0f);
 }
 
 inline void send_param_value(GcsLink& g, const char* name, float value,
@@ -1912,6 +1954,7 @@ int main(int argc, char** argv) {
             mavgcs::send_attitude(gcs, bridge);
             mavgcs::send_global_position_int(gcs, bridge);
             mavgcs::send_vfr_hud(gcs, bridge);
+            mavgcs::send_landing_diagnostics(gcs, bridge);
         }
     }
 }

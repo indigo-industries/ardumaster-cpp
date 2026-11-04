@@ -7,7 +7,13 @@
 namespace {
 struct ModelLoaderTestAccess {
     static bool overrides(Bridge& b) {
-        return b.sim_.prop_lapse_speed == 59.0f &&
+        return b.plane_.tecs.mutable_gains().land_time_const == 3.25f &&
+               b.plane_.tecs.mutable_gains().land_damp == .8f &&
+               b.plane_.tecs.mutable_gains().land_spd_weight == .4f &&
+               b.plane_.aparm.landing_rollout_pitch_rate == 1.0f &&
+               b.plane_.aparm.landing_reverse_throttle_pct == 30.0f &&
+               b.sim_.ground_brake_pitch_free == 1.0f &&
+               b.sim_.prop_lapse_speed == 59.0f &&
                b.sim_.ground_brake_mu == 0.4f &&
                b.sim_.ground_contact_drop_limit_m == 0.5f &&
                b.plane_.tecs.get_land_airspeed() == 18.0f &&
@@ -19,7 +25,13 @@ struct ModelLoaderTestAccess {
                b.plane_.tecs.mutable_gains().land_sink_rate_change == 0.125f;
     }
     static bool defaults(Bridge& b) {
-        return b.sim_.prop_lapse_speed == 0.0f &&
+        return b.plane_.tecs.mutable_gains().land_time_const == 2.0f &&
+               b.plane_.tecs.mutable_gains().land_damp == .5f &&
+               b.plane_.tecs.mutable_gains().land_spd_weight == -1.0f &&
+               b.plane_.aparm.landing_rollout_pitch_rate == 0.0f &&
+               b.plane_.aparm.landing_reverse_throttle_pct == 0.0f &&
+               b.sim_.ground_brake_pitch_free == 0.0f &&
+               b.sim_.prop_lapse_speed == 0.0f &&
                b.sim_.ground_brake_mu == 0.0f &&
                b.sim_.ground_contact_drop_limit_m == 0.0f &&
                b.sim_.wheel_brake == 0.0f &&
@@ -93,6 +105,108 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "terrain support gating failed: scenario %d\n",scenario); return 1;
         }
     }
-    std::puts("PASS: model overrides/reset, ground-only brakes and bounded terrain support");
+    // Contact projection residuals must not turn sub-micrometre/s upward
+    // roundoff into an airborne state on the next small surface drop.
+    {
+        fwcpp::sim::SimPlane sim;
+        sim.ground_behavior=fwcpp::sim::GroundBehavior::kFwdOnly;
+        sim.home.alt=0;sim.ground_level=0;sim.frame_height=0;sim.position={};
+        sim.ground_contact_drop_limit_m=.5f;sim.velocity_ef={30,0,-4.7683716e-7f};
+        sim.set_terrain_height(-.02f);
+        if (!sim.on_ground() || sim.velocity_ef.z!=0 || std::fabs(sim.position.z-.02f)>1e-6f) {return 1;}
+    }
+    // Real base dynamics must retain pitch momentum only for opted-in braking.
+    for (int mode = 0; mode < 4; ++mode) {
+        fwcpp::sim::SimPlane sim;
+        sim.home.alt = 0; sim.ground_level = 0; sim.frame_height = 0;
+        sim.ground_behavior = fwcpp::sim::GroundBehavior::kFwdOnly;
+        sim.ground_brake_pitch_free = mode == 0 ? 0.0f : 1.0f;
+        sim.wheel_brake = mode == 1 ? 0.0f : 1.0f;
+        sim.dcm.from_euler(0, mode == 3 ? 0.0f : .05f, 0);
+        sim.velocity_ef = {40,0,0}; sim.gyro = {0,-.1f,0};
+        sim.update_dynamics({}, .02f);
+        if (mode == 2 ? !(sim.gyro.y < 0) : sim.gyro.y != 0) {
+            std::fprintf(stderr,"braking pitch dynamics gate failed %d\n",mode);return 1;
+        }
+    }
+    // Identical non-flare inputs retain identical control outputs despite
+    // different flare settings. Final uses its own TC, then exits cleanly.
+    fwcpp::tecs::Tecs reference({}, {}), changed({}, {});
+    changed.mutable_gains().land_time_const = 4;
+    changed.mutable_gains().land_damp = 1;
+    fwcpp::tecs::TecsInputs in;
+    in.rotation_body_to_ned.identity(); in.eas2tas = 1;
+    in.using_airspeed_sensor = in.airspeed_eas_valid = true;
+    in.airspeed_eas = 12; in.velocity_ned_valid = true;
+    in.relative_position_d_home_m = -10;
+    for (unsigned i=1;i<=20;++i) {
+        in.now_us=i*20000; in.now_ms=i*20;
+        for (auto* t : {&reference,&changed}) {
+            t->update_50hz(in); t->update_pitch_throttle(1000,1200,10,1,in);
+        }
+        if (reference.get_pitch_demand()!=changed.get_pitch_demand() ||
+            reference.get_throttle_demand()!=changed.get_throttle_demand()) {return 1;}
+    }
+    fwcpp::tecs::TecsLandingInputs land;
+    land.is_flaring = true; land.height_above_land_valid = true; land.height_above_land_m=10;
+    in.now_us+=20000;in.now_ms+=20;changed.update_50hz(in);
+    changed.update_pitch_throttle(0,1200,10,1,in,land);
+    if (changed.debug_state().active_time_const != 4) {return 1;}
+    changed.reset_landing();
+    if (changed.debug_state().active_time_const != 5) {return 1;}
+    // A target100m above home must blend at the same actual clearance as
+    // target0. The old home-height substitution produced different rates.
+    fwcpp::tecs::Tecs low({}, {}), high({}, {});
+    for (int i=1;i<=150;++i) {
+        const float h = 10.0f - i*.06f;
+        if (i == 75) { high.offset_altitude(20); }
+        for (auto pair : {std::pair{&low,0.0f},std::pair{&high,i >= 75 ? 80.0f : 100.0f}}) {
+            auto v=in;v.now_us=i*20000;v.now_ms=i*20;
+            v.relative_position_d_home_m=-(h+pair.second);v.velocity_down_ms=3;
+            land.height_above_land_m=h;
+            pair.first->update_50hz(v);
+            pair.first->update_pitch_throttle(static_cast<int>(pair.second*100),1200,h+pair.second,1,v,land);
+        }
+        if (std::fabs(low.get_height_rate_demand()-high.get_height_rate_demand()) > .0001f) {return 1;}
+    }
+    auto& plane = const_cast<fwcpp::vehicle::Plane&>(b.plane());
+    plane.landing_stage = fwcpp::vehicle::Plane::LandingStage::Final;
+    fwcpp::vehicle::StabilizeInputs contact; contact.dt=.02f;
+    contact.on_ground=true; contact.on_ground_valid=true;
+    plane.update_landing_rollout(contact);
+    if (plane.landing_stage != fwcpp::vehicle::Plane::LandingStage::Final) {return 1;}
+    plane.aparm.landing_rollout_pitch_rate=1;
+    contact.on_ground_valid=false;plane.update_landing_rollout(contact);
+    if (plane.landing_stage != fwcpp::vehicle::Plane::LandingStage::Final) {return 1;}
+    contact.on_ground_valid=true;plane.update_landing_rollout(contact);
+    if (plane.landing_stage != fwcpp::vehicle::Plane::LandingStage::Rollout) {return 1;}
+    plane.landing_rollout_pitch_deg=3;contact.on_ground=false;
+    plane.update_landing_rollout(contact);
+    if (!(plane.nav_pitch_cd>=297 && plane.nav_pitch_cd<=298)) {return 1;}
+    if (!plane.set_mode(plane.mode_fbwb) ||
+        plane.landing_stage != fwcpp::vehicle::Plane::LandingStage::Normal) {return 1;}
+    plane.aparm.landing_reverse_throttle_pct=30;
+    plane.armed=true;plane.landing_stage=fwcpp::vehicle::Plane::LandingStage::Rollout;
+    contact.true_velocity_ned={30,0,0};contact.on_ground=true;contact.on_ground_valid=true;
+    if (std::fabs(plane.landing_reverse_throttle(contact)+.4f)>.0001f) {return 1;}
+    for (int i=0;i<100;++i) {plane.landing_reverse_throttle(contact);}
+    if (plane.landing_reverse_output_pct!=30) {return 1;}
+    contact.on_ground=false;
+    if (plane.landing_reverse_throttle(contact)!=0) {return 1;}
+    contact.on_ground=true;contact.true_velocity_ned={4,0,0};
+    if (plane.landing_reverse_throttle(contact)!=0) {return 1;}
+    contact.true_velocity_ned={30,0,0};plane.armed=false;
+    if (plane.landing_reverse_throttle(contact)!=0) {return 1;}
+    plane.armed=true;plane.landing_stage=fwcpp::vehicle::Plane::LandingStage::Final;
+    if (plane.landing_reverse_throttle(contact)!=0) {return 1;}
+    // Signed throttle reaches the actual plant and reduces forward momentum.
+    fwcpp::sim::SimPlane idle, reverse;
+    for (auto* sim : {&idle,&reverse}) {
+        sim->home.alt=0;sim->ground_level=0;sim->frame_height=0;
+        sim->position={};sim->velocity_ef={20,0,0};sim->ground_friction=0;
+    }
+    idle.update(0,0,0,0,.02f);reverse.update(0,0,0,-.3f,.02f);
+    if (!(reverse.velocity_ef.x < idle.velocity_ef.x && reverse.velocity_ef.x > 0)) {return 1;}
+    std::puts("PASS: model overrides/reset, brakes, terrain support, flare isolation/datum/exit and contact rollout");
     return 0;
 }

@@ -839,53 +839,9 @@ public:
     // CPP-030 leftover closer: Aircraft::update_dynamics switch
     // (SIM_Aircraft.cpp:787-868). Ship/tether gnd_movement is always
     // zero (no ship sim). kTailsitter is a no-op (out of scope).
-    void apply_ground_behavior([[maybe_unused]] float dt) {
-        if (!on_ground()) {
-            return;
-        }
-        switch (ground_behavior) {
-        case GroundBehavior::kNone:
-            break;
-        case GroundBehavior::kNoMovement: {
-            float r = 0.0f;
-            float p = 0.0f;
-            float y = 0.0f;
-            dcm.to_euler(&r, &p, &y);
-            dcm.from_euler(0.0f, 0.0f, y);
-            velocity_ef.x = 0.0f;
-            velocity_ef.y = 0.0f;
-            if (velocity_ef.z > 0.0f) {
-                velocity_ef.z = 0.0f;
-            }
-            gyro.zero();
-            break;
-        }
-        case GroundBehavior::kFwdOnly: {
-            float r = 0.0f;
-            float p = 0.0f;
-            float y = 0.0f;
-            dcm.to_euler(&r, &p, &y);
-            if (velocity_ef.length() < 5.0f) {
-                p = 0.0f;
-            } else {
-                p = (p > 0.0f) ? p : 0.0f;
-            }
-            dcm.from_euler(0.0f, p, y);
-            math::Vector3f v_bf = dcm.transposed() * velocity_ef;
-            v_bf.y = 0.0f;
-            if (v_bf.x < 0.0f) {
-                v_bf.x = 0.0f;
-            }
-            velocity_ef = dcm * v_bf;
-            if (velocity_ef.z > 0.0f) {
-                velocity_ef.z = 0.0f;
-            }
-            gyro.zero();
-            break;
-        }
-        case GroundBehavior::kTailsitter:
-            break;
-        }
+    void apply_ground_behavior(float dt) {
+        ground_pitch_rate_enabled = ground_brake_pitch_free > 0.0f && wheel_brake > 0.0f;
+        Aircraft::apply_ground_behavior(dt);
     }
 
     // Upstream: thrust_scale = (mass * GRAVITY_MSS) / hover_throttle
@@ -976,6 +932,8 @@ public:
         accel_body = math::Vector3f(thrust_newtons, 0.0f, 0.0f) + force;
         accel_body = accel_body / mass;
 
+        last_brake_accel = 0.0f;
+        last_normal_accel = 0.0f;
         if (on_ground()) {
             // add some ground friction — upstream's constant 0.3f, promoted to
             // a field for the same default-preserving reason as moment_inertia:
@@ -991,6 +949,8 @@ public:
             const float normal_accel = std::fmax(0.0f, kGravityMss + force.z / mass);
             const float brake_accel = std::fmin(std::fabs(vel_body.x) / std::fmax(dt, 1.e-6f),
                 ground_brake_mu * wheel_brake * normal_accel);
+            last_normal_accel = normal_accel;
+            last_brake_accel = brake_accel;
             accel_body.x -= std::copysign(brake_accel, vel_body.x);
         }
 
@@ -1034,6 +994,7 @@ public:
     // call site is behaviorally identical to the dead code's unconditional
     // one) and was removed rather than left unreachable.
     void update_dynamics(const math::Vector3f& rot_accel, float dt) {
+        ground_pitch_rate_enabled = ground_brake_pitch_free > 0.0f && wheel_brake > 0.0f;
         Aircraft::update_dynamics(rot_accel, dt);
     }
 
@@ -1127,8 +1088,11 @@ public:
     // Speed-proportional ground drag (1/s). 0.3f = upstream's own constant,
     // bit-identical - see the on_ground() note in update().
     float ground_friction = 0.3f;
+    float ground_brake_pitch_free = 0.0f; // opt-in pitch dynamics only while braking
     float ground_brake_mu = 0.0f; // tyre/runway friction coefficient; opt-in model
     float wheel_brake = 0.0f;     // commanded fraction [0,1], never active in flight
+    float last_brake_accel = 0.0f; // applied wheel braking, m/s^2, last plant step
+    float last_normal_accel = 0.0f; // wheel load per mass, m/s^2, last plant step
     float ground_contact_drop_limit_m = 0.0f; // opt-in support across small sampled surface drops
     void set_terrain_height(float hae_m) {
         const float drop = ground_level - hae_m;
@@ -1138,7 +1102,10 @@ public:
         // from the next aerodynamic integration still releases contact normally.
         // Airborne motion, large ledges and rising-ground collision are untouched.
         if (ground_behavior == GroundBehavior::kFwdOnly && on_ground() &&
-            velocity_ef.z >= 0.0f && drop > 0.0f && drop <= ground_contact_drop_limit_m) {
+            velocity_ef.z >= -1.0e-5f && drop > 0.0f && drop <= ground_contact_drop_limit_m) {
+            // Body/world projection can leave a sub-micrometre/s negative
+            // residual while supported. It is not a physical liftoff.
+            velocity_ef.z = std::fmax(velocity_ef.z, 0.0f);
             position.z += drop;
         }
         ground_level = hae_m;

@@ -321,10 +321,11 @@ inline void ModeAUTO::update(const StabilizeInputs& in) {
         plane_.calc_nav_roll(in);
         plane_.calc_nav_pitch();
         plane_.nav_roll_cd = plane_.constrain_landing_roll(plane_.nav_roll_cd);
+        plane_.update_landing_rollout(in);
         if (plane_.is_landing_final_flare()) {
-            // if landing is considered complete throttle is never allowed,
-            // regardless of landing type (upstream's own comment).
-            plane_.srv_channels.set_output_scaled(srv::Function::kThrottle, 0.0f);
+            // Forward thrust remains suppressed. Explicitly configured
+            // prop reverse is gated on current wheel contact.
+            plane_.srv_channels.set_output_scaled(srv::Function::kThrottle, plane_.landing_reverse_throttle(in));
         } else {
             plane_.calc_throttle();
         }

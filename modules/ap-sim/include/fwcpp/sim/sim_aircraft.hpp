@@ -210,7 +210,12 @@ public:
             if (velocity_ef.z > 0.0f) {
                 velocity_ef.z = 0.0f;
             }
-            gyro.zero();
+            if (ground_pitch_rate_enabled) {
+                gyro.x = gyro.z = 0.0f;
+                if (p <= 0.0f && gyro.y < 0.0f) { gyro.y = 0.0f; }
+            } else {
+                gyro.zero();
+            }
             break;
         }
         case GroundBehavior::kTailsitter: {
@@ -389,6 +394,7 @@ public:
     float frame_height{0.0f};
     float home_yaw{0.0f};
     bool home_is_set{false};
+    bool ground_pitch_rate_enabled = false; // explicit tricycle braking opt-in
     GroundBehavior ground_behavior{GroundBehavior::kNone};
 
     float turbulence_azimuth{0.0f};

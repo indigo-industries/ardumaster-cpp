@@ -37,6 +37,7 @@ inline constexpr std::uint32_t kMsgIdGlobalPositionInt = 33;
 inline constexpr std::uint32_t kMsgIdMissionRequestList = 43;
 inline constexpr std::uint32_t kMsgIdMissionAck = 47;
 inline constexpr std::uint32_t kMsgIdVfrHud = 74;
+inline constexpr std::uint32_t kMsgIdNamedValueFloat = 251;
 
 // CRC extras from same-tree lua (libraries/AP_Scripting/modules/MAVLink)
 // where present, else pymavlink message_checksum / generated headers of
@@ -174,6 +175,10 @@ enum class DecodeError : std::uint8_t {
     }
     if (msgid == kMsgIdMissionAck) {
         extra = kMissionAckCrcExtra;
+        return true;
+    }
+    if (msgid == kMsgIdNamedValueFloat) {
+        extra = 170; // common.xml NAMED_VALUE_FLOAT
         return true;
     }
     if (msgid == kMsgIdVfrHud) {
