@@ -758,7 +758,7 @@ public:
             // Opted-in MANUAL taxi: rudder steers the nosewheel; throttle PWM
             // below idle is a brake axis (1100=release, 800=full). Thrust stays
             // idle there. AUTO takeoff/landing and other models are unchanged.
-            sim_.ground_steering_active = mode_ == BridgeMode::kManual && sim_.ground_steering_wheelbase_m > 0.0f;
+            sim_.ground_steering_active = manual_taxi_active();
             sim_.ground_steering_input = (static_cast<float>(rc_pwm_[3])-1500.0f)/400.0f;
             if (sim_.ground_steering_active) {
                 sim_.wheel_brake = fwcpp::math::constrain_value((1100.0f-static_cast<float>(rc_pwm_[2]))/300.0f, 0.0f, 1.0f);
@@ -1105,6 +1105,12 @@ public:
     }
 
 private:
+    [[nodiscard]] bool manual_taxi_active() const {
+        // Use controller truth: RC failsafe can change mode without set_mode().
+        return !vtol_ && plane_.control_mode == &plane_.mode_manual &&
+            sim_.ground_steering_wheelbase_m > 0.0f;
+    }
+
     void set_neutral_sticks() {
         rc_pwm_[0] = 1500; // roll
         rc_pwm_[1] = 1500; // pitch
@@ -1120,7 +1126,14 @@ private:
     void apply_sticks() {
         plane_.hal.rc_input.set_channel(fwcpp::vehicle::kChannelRoll, rc_pwm_[0]);
         plane_.hal.rc_input.set_channel(fwcpp::vehicle::kChannelPitch, rc_pwm_[1]);
-        plane_.hal.rc_input.set_channel(fwcpp::vehicle::kChannelThrottle, rc_pwm_[2]);
+        // The opted-in MANUAL brake axis is not a receiver low-throttle
+        // failsafe signal. Preserve its raw PWM for tyre force, but present
+        // idle to Plane. Only the documented 800..1100 range is translated:
+        // lower invalid values, other modes/models and stale RC frames keep
+        // the normal failsafe path (no thresholds or timeout bypasses).
+        const bool brake_axis = manual_taxi_active() && rc_pwm_[2] >= 800 && rc_pwm_[2] <= 1100;
+        plane_.hal.rc_input.set_channel(fwcpp::vehicle::kChannelThrottle,
+                                        brake_axis ? static_cast<std::uint16_t>(1100) : rc_pwm_[2]);
         plane_.hal.rc_input.set_channel(fwcpp::vehicle::kChannelRudder, rc_pwm_[3]);
         plane_.rc_channels.read_input(plane_.hal.rc_input);
     }

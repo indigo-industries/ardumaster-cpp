@@ -11,6 +11,10 @@ struct ModelLoaderTestAccess {
         b.sim_.position.z = airborne ? -100.0f : 0.0f;
         b.sim_.velocity_ef = {speed,0,0};
     }
+    static void tick_without_rc(Bridge& b) {
+        b.now_ms_ += 20;
+        b.harness_.step(b.now_ms_, kDt);
+    }
 };
 float heading(const fwcpp::sim::SimPlane& sim) {
     float roll,pitch,yaw; sim.dcm.to_euler(&roll,&pitch,&yaw); return yaw;
@@ -23,6 +27,56 @@ int main(int argc, char** argv) {
     init.lat_1e7=299665823; init.lng_1e7=-816627719;
     std::strcpy(init.model_json,argv[1]);
     StepPayload rc{}; rc.n_steps=1; rc.rc_pwm[2]=800; rc.rc_pwm[3]=1900;
+
+    // Hold brakes beyond the 200 ms debounce, 1 s RC timeout and 5 s long
+    // failsafe. Check the real controller mode and physical stopping, armed
+    // and disarmed, including the exact 950 PWM failsafe threshold.
+    for (bool armed : {false,true}) {
+        for (std::uint16_t pwm : {800,950,1100}) {
+            Bridge held; CHECK(held.init(init)==Status::kOk);
+            held.gcs_arm(armed); ModelLoaderTestAccess::seed(held,false);
+            rc.rc_pwm[2]=pwm; rc.rc_pwm[3]=1500;
+            const float brake=(1100-pwm)/300.0f;
+            float max_brake_accel=0;
+            for (int tick=0;tick<400;++tick) {
+                CHECK(held.step(rc)==Status::kOk);
+                if(held.current_mode()!=BridgeMode::kManual)
+                    std::fprintf(stderr,"Brake mode loss: armed=%d PWM=%u tick=%d time=%.2fs\n",armed,pwm,tick+1,(tick+1)*.02f);
+                CHECK(held.current_mode()==BridgeMode::kManual);
+                CHECK(!held.plane().failsafe.rc_failsafe);
+                CHECK(held.plane().effective_throttle_pct()==0);
+                CHECK(held.plane().armed==armed);
+                CHECK(std::fabs(held.sim().wheel_brake-brake)<1e-6f);
+                CHECK(held.sim().on_ground());
+                max_brake_accel=std::fmax(max_brake_accel,held.sim().last_brake_accel);
+            }
+            CHECK(held.plane().failsafe.throttle_counter==0);
+            CHECK(brake==0 || (max_brake_accel>0 && held.sim().velocity_ef.length()<.01f));
+            std::printf("Held brake armed=%d PWM=%u: 8s MANUAL, speed=%.5f, peak brake=%.3f\n",
+                armed,pwm,held.sim().velocity_ef.length(),max_brake_accel);
+            // Consuming valid brake frames must not disable RC freshness.
+            for(int tick=0;tick<400;++tick) ModelLoaderTestAccess::tick_without_rc(held);
+            CHECK(held.plane().failsafe.rc_failsafe);
+            CHECK(held.current_mode()==BridgeMode::kRtl);
+        }
+    }
+    // Invalid values below the brake range, non-MANUAL modes, and models
+    // without opt-in must still hit the unchanged throttle failsafe.
+    for (int scenario=0;scenario<3;++scenario) {
+        InitPayload invalid_init=init;
+        if(scenario==2) invalid_init.model_json[0]='\0';
+        Bridge invalid; CHECK(invalid.init(invalid_init)==Status::kOk);
+        if(scenario==1) {
+            ModePayload m{}; m.mode=static_cast<std::uint8_t>(BridgeMode::kFbwa);
+            CHECK(invalid.set_mode(m)==Status::kOk);
+        }
+        rc.rc_pwm[2]=scenario==0 ? 799 : 800;
+        for(int tick=0;tick<400;++tick) CHECK(invalid.step(rc)==Status::kOk);
+        CHECK(invalid.plane().failsafe.rc_failsafe);
+        CHECK(invalid.current_mode()==BridgeMode::kRtl);
+        CHECK(!invalid.sim().ground_steering_active && invalid.sim().wheel_brake==0);
+    }
+    rc.rc_pwm[2]=800; rc.rc_pwm[3]=1900;
 
     // Braking is a below-idle RC axis only for the opted-in manual profile.
     // Test controller mode gating as well as physical off-ground force gating.

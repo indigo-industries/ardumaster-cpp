@@ -110,17 +110,23 @@ which the ground clamp clears; it can read zero during a constrained taxi turn.
 AHRS consumes `gyro_for_sensors()` instead. Assess taxi rotation using actual
 heading over time, not that integration-state diagnostic alone.
 
-On a model with positive steering wheelbase, MANUAL throttle PWM below 1100 is
+On a model with positive steering wheelbase, MANUAL throttle PWM 800..1100 is
 also a brake axis: 1100 releases, 950 is half, and 800 is full braking. Propulsion
 remains at idle below 1100. Brakes require `ground_brake_mu > 0`; physical tyre
 force is applied only on contact and cannot reverse the aircraft. Braking works
 while disarmed; propulsion still requires arming and safety-off. Switching out
 of MANUAL clears this brake command; the existing AUTO final-landing brake path
 is unchanged. `WHEEL_BRAK` is the command and `BRAKE_ACC` is the applied force.
+The bridge retains the raw brake PWM for tyre force and sends idle (1100) to
+Plane's RC throttle channel in this range, so holding the brakes does not trip
+the low-throttle RC failsafe. Values below 800 remain failsafe inputs; other
+modes/models and the missing-RC-frame timeout retain their existing behavior.
+Taxi control follows the controller's actual mode, including failsafe changes.
 
 With `FWCPP_BRIDGE_MODEL_TEST=ON`, build `wopr_bridge_taxi_test` and run
 `ctest --test-dir build -R '^wopr_bridge_(model|mission|arming|taxi)$' --output-on-failure`.
 The taxi test exercises real bridge RC/mode handling, disabled models, airborne
-force gating, idle thrust, high-speed yaw parity, and an integrated 180-degree
+force gating, idle thrust, eight-second brake holds armed/disarmed, low/absent
+RC failsafe preservation, high-speed yaw parity, and an integrated 180-degree
 turn followed by a stop. It does not prove live terrain contact or obstacle
 clearance; validate wheel tracks and the full aircraft swept footprint separately.
