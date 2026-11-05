@@ -6,6 +6,21 @@
 
 namespace {
 struct ModelLoaderTestAccess {
+    static bool host_true_airspeed(Bridge& b) {
+        // At altitude with wind, TAS differs from both EAS and groundspeed.
+        // Exercise the host packet boundary without changing controller EAS.
+        b.sim_.airspeed = 100.0f;
+        b.sim_.eas2tas = 1.3f;
+        b.sim_.velocity_ef = {150.0f, 0.0f, 0.0f};
+        StateReply reply{};
+        b.fill_state(reply);
+        if (std::fabs(reply.airspeed_mps - 130.0f) > .001f || b.sim_.airspeed != 100.0f) {
+            return false;
+        }
+        b.sim_.eas2tas = 1.0f;
+        b.fill_state(reply);
+        return reply.airspeed_mps == 100.0f;
+    }
     static bool overrides(Bridge& b) {
         return b.plane_.pitch_controller.rate_pid().kP() == .2f &&
                b.plane_.pitch_controller.rate_pid().kI() == .16f &&
@@ -69,6 +84,10 @@ int main(int argc, char** argv) {
     p.alt_m = 700.0f;
     if (b.init(p) != Status::kOk || !ModelLoaderTestAccess::defaults(b)) {
         std::fprintf(stderr, "initial defaults differ\n");
+        return 1;
+    }
+    if (!ModelLoaderTestAccess::host_true_airspeed(b)) {
+        std::fprintf(stderr, "host speed must be TAS, not EAS or groundspeed\n");
         return 1;
     }
     std::strcpy(p.model_json, argv[1]);

@@ -1106,7 +1106,9 @@ public:
         r.gyro_rps[0] = plant.gyro.x;
         r.gyro_rps[1] = plant.gyro.y;
         r.gyro_rps[2] = plant.gyro.z;
-        r.airspeed_mps = plant.airspeed;
+        // Host pose/formation consumers require TAS; the plant's public
+        // airspeed field is EAS for the flight controllers and pitot sensor.
+        r.airspeed_mps = plant.true_airspeed();
         r.hagl_m = plant.hagl();
         r.servo_norm[0] =
             plane_.srv_channels.get_output_scaled(fwcpp::srv::Function::kAileron) / fwcpp::vehicle::kServoMax;
