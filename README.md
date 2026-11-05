@@ -37,7 +37,12 @@ The bridge consumes landing `flare_alt_m`, `flare_sec`, `land_sink` and `land_sr
 in addition to ground steering, propeller lapse and takeoff ground pitch. It also
 reads `land_time_const`, `land_damp`, `land_spd_weight`,
 `landing_rollout_pitch_rate`, `landing_reverse_throttle_pct` and
-`ground_brake_pitch_free`. To verify overrides
+`ground_brake_pitch_free`. Optional `pitch_rate_p`, `pitch_rate_i`,
+`pitch_rate_d`, and `pitch_rate_ff` configure the active inner pitch-rate PID.
+Omitted values retain upstream defaults; nonnumeric, negative and nonfinite
+values reject the model. Re-INIT resets overrides. Startup output reports
+consumed gains, and MAVLink `HAGL` reports unrounded plant ground clearance.
+To verify overrides
 through the real INIT loader, re-INIT defaults, final-flare state/datum handling,
 and the production ground-dynamics pitch gates:
 

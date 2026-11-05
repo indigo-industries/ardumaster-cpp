@@ -584,6 +584,25 @@ public:
         fwcpp::sim::json_get_float(obj, "tecs_time_const", tg.time_const);
         fwcpp::sim::json_get_float(obj, "tecs_thr_damp", tg.thr_damp);
         fwcpp::sim::json_get_float(obj, "tecs_ptch_damp", tg.ptch_damp);
+        // Airframe-specific inner pitch-rate tuning. Omitted keys retain the
+        // upstream defaults; INIT reconstructs the controller before loading.
+        auto& pitch_pid = plane_.pitch_controller.rate_pid();
+        for (const auto& entry : {std::pair{"pitch_rate_p", &pitch_pid.kP()},
+                                  std::pair{"pitch_rate_i", &pitch_pid.kI()},
+                                  std::pair{"pitch_rate_d", &pitch_pid.kD()},
+                                  std::pair{"pitch_rate_ff", &pitch_pid.ff()}}) {
+            if (obj.get(entry.first) == nullptr) { continue; }
+            float value = 0.0f;
+            if (!fwcpp::sim::json_get_float(obj, entry.first, value) ||
+                !std::isfinite(value) || value < 0.0f) {
+                std::printf("model rejected: %s must be finite and nonnegative\n", entry.first);
+                return false;
+            }
+            *entry.second = value;
+        }
+        std::printf("model pitch-rate gains: P=%.6g I=%.6g D=%.6g FF=%.6g\n",
+                    pitch_pid.kP(), pitch_pid.kI(), pitch_pid.kD(), pitch_pid.ff());
+        std::fflush(stdout);
         fwcpp::sim::json_get_float(obj, "tecs_integ_gain", tg.integ_gain);
         fwcpp::sim::json_get_float(obj, "land_spd_weight", tg.land_spd_weight);
         fwcpp::sim::json_get_float(obj, "land_time_const", tg.land_time_const);
@@ -1506,6 +1525,7 @@ inline void send_landing_diagnostics(GcsLink& g, const Bridge& b) {
     send("BRAKE_ACC", b.sim().last_brake_accel);
     send("REV_THR", std::min(0.0f, b.plane().effective_throttle_pct()));
     send("ON_GROUND", b.sim().on_ground() ? 1.0f : 0.0f);
+    send("HAGL", b.sim().hagl()); // unrounded plant clearance for contact/bounce verification
 }
 
 inline void send_param_value(GcsLink& g, const char* name, float value,

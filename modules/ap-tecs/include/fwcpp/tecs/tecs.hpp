@@ -596,10 +596,14 @@ public:
 
         const std::uint64_t now = in.now_us;
         float dt = static_cast<float>(now - update_50hz_last_us_) * 1.0e-6f;
-        flags_.reset = dt > 1.0f;
+        flags_.reset = update_50hz_last_us_ == 0 || dt > 1.0f;
         if (flags_.reset) {
             climb_rate_ = 0.0f;
             height_filter_.dd_height = 0.0f;
+            // An airborne start can first run at20ms, not after a1s gap.
+            // Seed before computing hgt_err: integrating the initial1400m
+            // offset as motion fabricated ~780m/s climb and excited TECS.
+            height_filter_.height = in.baro_altitude_m;
             dt = 0.02f; // when first starting TECS, use most likely time constant
             vdot_filter_.reset();
         }
@@ -620,9 +624,7 @@ public:
             climb_rate_ += integ2_input * dt;
 
             const float integ3_input = climb_rate_ + hgt_err * gains_.hgt_comp_filt_omega * 3.0f;
-            if (flags_.reset) {
-                height_filter_.height = height_;
-            } else {
+            if (!flags_.reset) {
                 height_filter_.height += integ3_input * dt;
             }
         }

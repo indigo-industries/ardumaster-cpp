@@ -7,7 +7,11 @@
 namespace {
 struct ModelLoaderTestAccess {
     static bool overrides(Bridge& b) {
-        return b.plane_.tecs.mutable_gains().land_time_const == 3.25f &&
+        return b.plane_.pitch_controller.rate_pid().kP() == .2f &&
+               b.plane_.pitch_controller.rate_pid().kI() == .16f &&
+               b.plane_.pitch_controller.rate_pid().kD() == .01f &&
+               b.plane_.pitch_controller.rate_pid().ff() == .4f &&
+               b.plane_.tecs.mutable_gains().land_time_const == 3.25f &&
                b.plane_.tecs.mutable_gains().land_damp == .8f &&
                b.plane_.tecs.mutable_gains().land_spd_weight == .4f &&
                b.plane_.aparm.landing_rollout_pitch_rate == 1.0f &&
@@ -27,7 +31,11 @@ struct ModelLoaderTestAccess {
                b.plane_.tecs.mutable_gains().land_sink_rate_change == 0.125f;
     }
     static bool defaults(Bridge& b) {
-        return b.plane_.tecs.mutable_gains().land_time_const == 2.0f &&
+        return b.plane_.pitch_controller.rate_pid().kP() == .04f &&
+               b.plane_.pitch_controller.rate_pid().kI() == .15f &&
+               b.plane_.pitch_controller.rate_pid().kD() == 0.0f &&
+               b.plane_.pitch_controller.rate_pid().ff() == .345f &&
+               b.plane_.tecs.mutable_gains().land_time_const == 2.0f &&
                b.plane_.tecs.mutable_gains().land_damp == .5f &&
                b.plane_.tecs.mutable_gains().land_spd_weight == -1.0f &&
                b.plane_.aparm.landing_rollout_pitch_rate == 0.0f &&
@@ -73,6 +81,41 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "re-INIT retained stale model overrides\n");
         return 1;
     }
+    const std::string fixture_path = argv[1];
+    const std::string fixture_dir = fixture_path.substr(0, fixture_path.find_last_of("/\\") + 1);
+    for (const char* file : {"wopr_pitch_negative.json", "wopr_pitch_nonnumeric.json", "wopr_pitch_overflow.json"}) {
+        const std::string invalid = fixture_dir + file;
+        if (invalid.size() >= sizeof(p.model_json)) { return 2; }
+        std::strcpy(p.model_json, invalid.c_str());
+        if (b.init(p) != Status::kBadModel) {
+            std::fprintf(stderr, "invalid pitch gain accepted: %s\n", file); return 1;
+        }
+    }
+    p.model_json[0] = '\0';
+    if (b.init(p) != Status::kOk || !ModelLoaderTestAccess::defaults(b)) { return 1; }
+    // No fake vertical velocity on an elevated first tick or restart gap.
+    fwcpp::tecs::Tecs seeded({}, {});
+    fwcpp::tecs::TecsInputs seed;
+    seed.now_us=20000; seed.now_ms=20;
+    seed.relative_position_d_home_m=-1400; seed.baro_altitude_m=1400;
+    seed.accel_ef_z=-fwcpp::sim::kGravityMss;
+    seed.using_airspeed_sensor=true; seed.airspeed_eas_valid=true; seed.airspeed_eas=120;
+    for (int i=0;i<100;++i) {
+        seeded.update_50hz(seed);
+        if (std::fabs(seeded.get_climb_rate()) > .001f ||
+            std::fabs(seeded.get_tas_state()-120) > .001f) { return 1; }
+        seed.now_us+=20000; seed.now_ms+=20;
+    }
+    seed.now_us+=2000000;seed.now_ms+=2000;
+    seed.relative_position_d_home_m=-800;seed.baro_altitude_m=800;
+    for (int i=0;i<100;++i) {
+        seeded.update_50hz(seed);
+        if (std::fabs(seeded.get_climb_rate()) > .001f) { return 1; }
+        seed.now_us+=20000;seed.now_ms+=20;
+    }
+    seed.velocity_ned_valid=true;seed.velocity_down_ms=2.5f;
+    seeded.update_50hz(seed);
+    if (std::fabs(seeded.get_climb_rate()+2.5f) > .001f) { return 1; }
     // The same tyre setting must affect rollout but never airborne motion.
     for (bool airborne : {false, true}) {
         fwcpp::sim::SimPlane coast, brake;
@@ -228,6 +271,37 @@ int main(int argc, char** argv) {
             std::fprintf(stderr,"taxi steering gate failed %d yaw=%f\n",scenario,y);return 1;
         }
     }
-    std::puts("PASS: model overrides/reset, taxi/contact gates, brakes, terrain support, flare isolation/datum/exit and contact rollout");
+    // A contact-tolerance upward residual must be arrested by downforce;
+    // actual upward lift must still release the wheels (no sticky landing).
+    for (bool lifting : {false, true}) {
+        fwcpp::sim::Aircraft sim;
+        sim.ground_behavior=fwcpp::sim::GroundBehavior::kFwdOnly;
+        sim.ground_pitch_rate_enabled=true;
+        sim.velocity_ef={80,0,-.001f};
+        for (int i=0;i<10;++i) {
+            sim.accel_body={0,0,-fwcpp::sim::kGravityMss+(lifting ? -2.0f : 2.0f)};
+            sim.update_dynamics({},.02f);
+        }
+        if (lifting ? sim.on_ground() : (!sim.on_ground() || sim.velocity_ef.z!=0)) {
+            std::fprintf(stderr,"contact force release/regain failed\n");return 1;
+        }
+    }
+    // 50 Hz integration at the transfer flight's 485 km offset must preserve
+    // net travel; wire positions may quantize, but every tick must not do so.
+    fwcpp::sim::Aircraft distant;
+    distant.position={18000,-485000,-1000};
+    distant.velocity_ef={78,-10.6f,0};
+    for (int i=0;i<5000;++i) {
+        distant.accel_body={0,0,-fwcpp::sim::kGravityMss};
+        distant.update_dynamics({},.02f);
+    }
+    if (std::fabs(distant.position.x-25800)>.02f ||
+        std::fabs(distant.position.y+486060)>.04f) {
+        std::fprintf(stderr,"distant integration loses travel\n");return 1;
+    }
+    distant.position={1,2,-1000};distant.velocity_ef={0,0,0};
+    distant.accel_body={0,0,-fwcpp::sim::kGravityMss};distant.update_dynamics({},.02f);
+    if (distant.position.x!=1 || distant.position.y!=2) {return 1;}
+    std::puts("PASS: model/reset, taxi, brakes, terrain, flare, contact release and distant integration");
     return 0;
 }

@@ -56,6 +56,8 @@ public:
         origin = home;
         position.x = 0.0f;
         position.y = 0.0f;
+        position_remainder_x_ = position_remainder_y_ = 0.0;
+        integrated_position_x_ = integrated_position_y_ = 0.0f;
         home_yaw = start_yaw_deg;
         home_is_set = true;
         location = home;
@@ -261,7 +263,12 @@ public:
         math::Vector3f accel_earth = dcm * accel_body;
         accel_earth += math::Vector3f(0.0f, 0.0f, kGravityMss);
 
-        if (on_ground() && accel_earth.z > 0.0f) {
+        // The tricycle contact tolerance can still report supported during a
+        // tiny upward velocity. Allow gravity/downforce to arrest that motion;
+        // cancelling it permanently preserves an upward residual, which then
+        // defeats sampled-terrain support at the next small pavement drop.
+        if (on_ground() && accel_earth.z > 0.0f &&
+            (!ground_pitch_rate_enabled || velocity_ef.z >= 0.0f)) {
             accel_earth.z = 0.0f;
         }
 
@@ -269,7 +276,22 @@ public:
 
         velocity_ef += accel_earth * dt;
         const bool was_on_ground = on_ground();
-        position += velocity_ef * dt;
+        // Retain sub-ULP horizontal travel. At 500 km from the origin a float
+        // position rounds each 20 ms eastward step to 3.125 cm increments;
+        // repeated rounding biases ground track even with accurate velocity.
+        // External pose resets invalidate the carried remainder.
+        if (position.x != integrated_position_x_ || position.y != integrated_position_y_) {
+            position_remainder_x_ = position_remainder_y_ = 0.0;
+        }
+        const double next_x = double(position.x) + double(velocity_ef.x) * dt + position_remainder_x_;
+        const double next_y = double(position.y) + double(velocity_ef.y) * dt + position_remainder_y_;
+        position.x = static_cast<float>(next_x);
+        position.y = static_cast<float>(next_y);
+        position.z += velocity_ef.z * dt;
+        position_remainder_x_ = next_x - position.x;
+        position_remainder_y_ = next_y - position.y;
+        integrated_position_x_ = position.x;
+        integrated_position_y_ = position.y;
 
         velocity_air_ef = velocity_ef - wind_ef;
         velocity_air_bf = dcm.transposed() * velocity_air_ef;
@@ -378,6 +400,10 @@ public:
     math::Vector3f velocity_air_ef{};
     math::Vector3f velocity_air_bf{};
     math::Vector3f position{};
+    double position_remainder_x_ = 0.0;
+    double position_remainder_y_ = 0.0;
+    float integrated_position_x_ = 0.0f;
+    float integrated_position_y_ = 0.0f;
     math::Vector3f wind_ef{};
     math::Vector3f mag_bf{};
 

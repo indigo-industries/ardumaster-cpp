@@ -1,5 +1,9 @@
 {
   "ground_steer_alt": 7.0,
+  "pitch_rate_p": 0.2,
+  "pitch_rate_i": 0.16,
+  "pitch_rate_d": 0.01,
+  "pitch_rate_ff": 0.4,
   "prop_lapse_speed": 59.0,
   "takeoff_ground_pitch": 2.0,
   "flare_alt_m": 17.5,

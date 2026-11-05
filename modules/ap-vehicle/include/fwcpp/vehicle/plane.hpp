@@ -6751,9 +6751,18 @@ public:
         // ahead. This prevents sudden turns if we overshoot the landing
         // point" - reproduced directly, unconditional every tick.
         Location land_wp_loc = next_WP_loc;
-        const std::int32_t land_bearing_cd = prev_WP_loc.get_bearing_to(next_WP_loc);
-        land_wp_loc.offset_bearing(static_cast<float>(land_bearing_cd) * 0.01f,
-                                    prev_WP_loc.get_distance(current_loc) + 200.0f);
+        const auto approach = prev_WP_loc.get_distance_NE(next_WP_loc);
+        const float approach_length = approach.length();
+        const float ahead_distance = prev_WP_loc.get_distance(current_loc) + 200.0f;
+        if (approach_length > 1.0f && ahead_distance > approach_length) {
+            // Extend from the leg origin using the unquantized NE vector.
+            // Offsetting LAND by the entire travelled distance doubled long
+            // finals and rotated the line through latitude scaling/centidegree
+            // rounding. Keep LAND exact until an extension is actually needed.
+            land_wp_loc = prev_WP_loc;
+            const auto extended = approach * (ahead_distance / approach_length);
+            land_wp_loc.offset(extended.x, extended.y);
+        }
         nav_controller.update_waypoint(prev_WP_loc, land_wp_loc, l1_in);
 
         return false;

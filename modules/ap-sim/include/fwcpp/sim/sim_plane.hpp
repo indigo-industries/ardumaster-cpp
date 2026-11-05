@@ -976,6 +976,16 @@ public:
             } // Above taxi speed, preserve the existing aerodynamic yaw.
         }
         update_dynamics(rot_accel, dt);
+        // Tricycle contact can remove the descent velocity after the base
+        // integrator cached air-relative velocity. Feed the next force sample
+        // the actual supported motion, not the pre-impact sink (which creates
+        // excess AoA/lift immediately after touchdown). Leave legacy plants
+        // and genuinely airborne dynamics unchanged.
+        if (ground_pitch_rate_enabled && on_ground()) {
+            velocity_air_ef = velocity_ef - wind_ef;
+            velocity_air_bf = dcm.transposed() * velocity_air_ef;
+            update_eas_airspeed();
+        }
         // Forward-only contact clears the integration gyro after applying yaw.
         // Retain that applied rate for the next sensor sample. On liftoff the
         // base integrator keeps gyro itself, so adding it again would double it.
