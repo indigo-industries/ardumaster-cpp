@@ -1147,23 +1147,14 @@
 // set (to the vehicle's real takeoff point) long before AUTO could ever be
 // entered, since a vehicle can't arm without it. This port has no arming
 // subsystem to enforce that guarantee, so ModeAUTO::enter() (mode.hpp) now
-// includes a REAL, MINIMAL fallback: if `plane_.home` is still exactly the
-// default-constructed Location() (the only state distinguishable as "never
-// explicitly set" - a Location() being a genuinely INTENDED home would
-// coincide with a vehicle already sitting at the shared origin, which is
-// exactly this port's own "the origin IS the usual launch point" reasoning,
-// quoted directly from SLICE 6's own set_home() note), set it to the
-// vehicle's OWN current_loc at the moment AUTO starts - i.e. treat "no
-// caller ever called set_home()" as "home is wherever the mission started
-// from", which is precisely what upstream's real GPS-lock-at-boot behavior
-// usually amounts to in practice (a vehicle typically starts its first
-// mission from very near where it was armed). This does NOT override a
-// caller's own explicit set_home() call made anywhere else with any other
-// value - the check only fires when home is still at its untouched
-// default, honoring ModeRTL's own "explicit setup, no automatic magic"
-// contract for every OTHER case. Documented here, not silently added,
-// exactly as the ticket asked.
-
+// includes a minimal fallback only if set_home() was never called and home
+// is still the default Location(). Setter provenance is tracked separately:
+// an explicitly configured origin is valid even when AUTO begins elsewhere
+// or airborne. This also preserves legacy direct nonzero home assignments.
+// The flag is not upstream's GPS/home-lock/arming state machine; arm() and
+// the fallback still use the same set_home() API and retain their behavior.
+// A freshly constructed Plane resets the setter provenance.
+//
 // =====================================================================
 // CPP-031 SLICE 8 ADDENDUM: RC short (throttle) failsafe - detection,
 // debounce, automatic mode switch, and recovery. Upstream (Plane-4.7.0,
@@ -5063,7 +5054,10 @@ public:
     // this port doesn't have (see file banner) - this is the explicit
     // substitute, matching this port's "explicit setup, no automatic
     // magic" pattern.
-    void set_home(const Location& loc) { home = loc; }
+    void set_home(const Location& loc) { home = loc; home_has_been_set_ = true; }
+    // Setter provenance only; this is not GPS validity or upstream's
+    // arming/home-lock state machine. Includes arm() and AUTO fallback.
+    [[nodiscard]] bool home_has_been_set() const { return home_has_been_set_; }
 
     // =================================================================
     // CPP-031 SLICE 9 (Plane::arm()/disarm()) - see file banner addendum
@@ -8133,6 +8127,7 @@ public:
     }
 
 private:
+    bool home_has_been_set_ = false;
     // Used only during the member-init list above - see file banner's
     // "DECLARATION-ORDER CONSTRAINT" note for why this is safe.
     [[nodiscard]] fw_control::FwAparm fw_aparm() const {

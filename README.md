@@ -231,3 +231,19 @@ using diagnostics to assess response. Native and wire regressions cover reader
 consumers/default reset, invalid input, signed boundary/fractional fallback,
 direction, and the diagnostic fields. Aircraft tuning requires separate flight
 validation; these settings do not automatically compensate for an infeasible orbit.
+
+### Explicit origin home ownership
+
+AUTO preserves a home supplied through `Plane::set_home`, including an all-zero
+local origin when the aircraft enters AUTO elsewhere or airborne. Setter-call
+provenance is separate from coordinate values. If the setter was never called
+and public home remains zero, AUTO retains its existing current-location fallback;
+legacy direct nonzero home assignments are also preserved. `arm()` still sets
+home intentionally. A newly constructed Plane resets setter provenance; this is
+not a GPS-validity/home-lock subsystem.
+
+The WOPR bridge explicitly configures home at its start-frame origin. Entering
+AUTO therefore keeps HOME_UP0 and RTL targets start-relative100m under the default
+RTL altitude, rather than silently moving home to the airborne entry point.
+This does not change HAE/MSL or mission-frame conversion, arming, tuning, or radius.
+Native regression and MAVLink HOME_UP/TGT_UP readback cover this distinction.
