@@ -1683,6 +1683,9 @@ inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f)
     }
 
     case kMsgIdMissionItemInt: {
+        if (p[32] != 0 && p[32] != g.sysid) {
+            break; // another aircraft's row must not advance our upload
+        }
         if (!g.up_active) {
             break;
         }

@@ -176,3 +176,12 @@ For CTest/CI, configure with -DFWCPP_BRIDGE_MAVLINK_TEST=ON and run
 ctest --test-dir build -R wopr_bridge_mission_roundtrip --output-on-failure.
 The option requires pymavlink in the selected Python3_EXECUTABLE and fails
 configuration if that dependency is missing; default builds do not require Python.
+
+### Active mission upload target isolation
+
+`MISSION_ITEM_INT` rows addressed to another system are ignored before they
+can change an active upload's sequence or plan. Rows addressed to this bridge
+or broadcast system0 remain accepted, consistent with `MISSION_COUNT`.
+The optional MAVLink wire CTest also injects a wrong-system NAV row during an
+active upload, checks that no request/ACK advances, then completes the original
+plan using broadcast rows and verifies its download.

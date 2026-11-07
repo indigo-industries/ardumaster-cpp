@@ -1,4 +1,4 @@
-"""Real MAVLink upload/download preserves optional NAV metadata.
+"""Real MAVLink mission metadata and active-upload target isolation.
 
 Requires pymavlink. These fields round-trip; this does not implement pass-by
 or yaw flight behavior. Run with --exe build/sitl/wopr_bridge.exe --model PATH.
@@ -33,7 +33,7 @@ def recv(types):
         if m and m.get_srcSystem()==7 and m.get_type() in types:
             return m
     raise TimeoutError(types)
-def upload(rows, expected):
+def upload(rows, expected, inject_wrong_target=False):
     gcs.mav.mission_count_send(7, 1, len(rows), 0)
     while True:
         m = recv(['MISSION_REQUEST_INT', 'MISSION_ACK'])
@@ -41,7 +41,11 @@ def upload(rows, expected):
             assert m.type==expected, m
             return
         r=rows[m.seq]
-        gcs.mav.mission_item_int_send(7,1,m.seq,r['frame'],r['command'],int(m.seq==0),1,r['param1'],r['param2'],r['param3'],r['param4'],r['x'],r['y'],r['z'],0)
+        if inject_wrong_target and m.seq==1:
+            gcs.mav.mission_item_int_send(8,1,m.seq,r['frame'],r['command'],0,1,r['param1'],r['param2'],r['param3'],r['param4'],r['x'],r['y'],r['z']+100,0)
+            unexpected=gcs.recv_match(type=['MISSION_REQUEST_INT','MISSION_ACK'],blocking=True,timeout=1)
+            assert unexpected is None, ('wrong target advanced active upload', unexpected)
+        gcs.mav.mission_item_int_send(0 if inject_wrong_target else 7,1,m.seq,r['frame'],r['command'],int(m.seq==0),1,r['param1'],r['param2'],r['param3'],r['param4'],r['x'],r['y'],r['z'],0)
 def verify(rows):
     gcs.mav.mission_request_list_send(7,1,0)
     assert recv(['MISSION_COUNT']).count==len(rows)
@@ -65,8 +69,9 @@ try:
     for i in range(4):
         rows.append(dict(seq=i,frame=0,command=16,param1=0.,param2=250.,param3=42.5 if i==1 else -7.25 if i==2 else 0.,param4=135. if i==1 else float('nan') if i==2 else -90.,x=333000000,y=-1122000000+i*100000,z=4000.))
     upload(rows,0);verify(rows)
+    upload(rows,0,inject_wrong_target=True);verify(rows)
     rejected=[dict(r) for r in rows];rejected[1]['command']=17
     upload(rejected,3);verify(rows)
-    print('PASS optional NAV param3/param4 including NaN round-trip and rejected-upload cache preservation')
+    print('PASS optional NAV metadata, wrong-target isolation, broadcast items and rejection preservation')
 finally:
     gcs.close();wire.close();process.terminate();process.wait(timeout=5)
