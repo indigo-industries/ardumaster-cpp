@@ -1722,6 +1722,10 @@ inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f)
         const float p2 = read_f32_le(p + 4);
         switch (command) {
         case 400: // MAV_CMD_COMPONENT_ARM_DISARM
+            if (!std::isfinite(p1) || (p1 != 0.0f && p1 != 1.0f)) {
+                send_command_ack(g, command, 4);
+                break;
+            }
             bridge.gcs_arm(p1 > 0.5f);
             send_command_ack(g, command, 0);
             break;
