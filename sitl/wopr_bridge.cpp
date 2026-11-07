@@ -1713,8 +1713,9 @@ inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f)
 
     case kMsgIdCommandLong: {
         const std::uint8_t target_sys = p[30];
-        if (target_sys != 0 && target_sys != g.sysid) {
-            break; // addressed to a different aircraft on a shared link
+        if (target_sys != 0 &&
+            (target_sys != g.sysid || (p[31] != 0 && p[31] != kCompId))) {
+            break; // another system/component; system 0 remains a network broadcast
         }
         const std::uint16_t command = read_u16_le(p + 28);
         const float p1 = read_f32_le(p);
