@@ -4540,6 +4540,10 @@ public:
     // ADDENDUM" note above. Body: mode.hpp.
     bool enter() override;
 
+    // Activate the first command after a validated mission replacement while
+    // AUTO is already running. Does not reinitialize home or change modes.
+    void restart_current_mission_command();
+
     // upstream: ModeAuto::update() - CPP-039: now the real Takeoff-vs-
     // Waypoint dispatch (see this class's own "CPP-039 ADDENDUM" note
     // above), not just the NAV_WAYPOINT-only branch. Body: mode.hpp.

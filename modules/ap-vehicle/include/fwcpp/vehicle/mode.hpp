@@ -252,6 +252,14 @@ inline bool ModeAUTO::enter() {
         plane_.set_home(plane_.current_loc);
     }
 
+    restart_current_mission_command();
+    return true;
+}
+
+inline void ModeAUTO::restart_current_mission_command() {
+    // A successful mission replacement resets the mission index while AUTO
+    // may already be active. Dispatch its new command without changing mode
+    // or repeating enter()'s home-initialization policy.
     plane_.next_WP_loc = plane_.prev_WP_loc = plane_.current_loc;
     // CPP-039 - upstream: start_command()'s own `switch(cmd.id)` dispatch
     // (commands_logic.cpp), restricted to this port's two-command
@@ -280,7 +288,6 @@ inline bool ModeAUTO::enter() {
             plane_.do_nav_wp();
         }
     }
-    return true;
 }
 
 inline void ModeAUTO::update(const StabilizeInputs& in) {

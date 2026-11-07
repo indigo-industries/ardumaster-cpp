@@ -31,6 +31,24 @@ tests/      parity and unit tests, one target per module under test
 Check `python3 ../../tracker/tracker.py status --effort fw-cpp -v` from the tracker
 directory, or see `../../tracker/STATUS.md`.
 
+## WOPR mission replacement during AUTO
+
+Both the private host mission upload and the MAVLink mission upload replace the
+stored mission and reset its index. When the fixed-wing controller is already
+in AUTO, a successful replacement also activates the new first NAV command
+from the current position. Rejected uploads preserve the active mission.
+Uploading in MANUAL or another mode does not start a flight. Ordinary repeated
+AUTO requests remain idempotent, and replacement does not reinitialize home.
+An accepted upload is not proof of altitude/track convergence; observe telemetry.
+
+Regression: `wopr_bridge_mission_test` covers both upload paths, rejected-plan
+preservation, MANUAL upload, home preservation and repeated-AUTO idempotence.
+An actual WOPR C130 MAVLink comparison at 4000m HAE replaced its AUTO mission
+with a +100m plan: before the fix it still held 3996.30m after 80s against a
+4096.28m target; after the fix the final sampled-window mean was 4096.55m.
+Both uploads/AUTO commands ACKed; the fixed run also verified mission readback.
+This checks command activation, not certified performance or every flight mode.
+
 ## WOPR model reader regression
 
 The bridge consumes landing `flare_alt_m`, `flare_sec`, `land_sink` and `land_src`

@@ -923,6 +923,7 @@ public:
         if (!plane_.mission.load(std::span<const fwcpp::vehicle::MissionItem>(converted.data(), count))) {
             return Status::kBadMission;
         }
+        activate_replaced_auto_mission();
         return Status::kOk;
     }
 
@@ -1081,6 +1082,7 @@ public:
         if (!plane_.mission.load(std::span<const fwcpp::vehicle::MissionItem>(converted.data(), count))) {
             return -1;
         }
+        activate_replaced_auto_mission();
         observe_mission_base();
         return static_cast<int>(count);
     }
@@ -1126,6 +1128,15 @@ public:
     }
 
 private:
+    void activate_replaced_auto_mission() {
+        // Refresh only a genuinely active fixed-wing AUTO leg. Uploading in
+        // MANUAL/other modes must not start a flight, and repeated mode calls
+        // remain idempotent. Inactive VTOL-managed legs read their own state.
+        if (plane_.control_mode == &plane_.mode_auto) {
+            plane_.mode_auto.restart_current_mission_command();
+        }
+    }
+
     [[nodiscard]] bool manual_taxi_active() const {
         // Use controller truth: RC failsafe can change mode without set_mode().
         return !vtol_ && plane_.control_mode == &plane_.mode_manual &&

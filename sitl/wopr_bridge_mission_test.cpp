@@ -38,6 +38,53 @@ int main() {
     if (bridge.gcs_mission_load(rows.data(), rows.size()) != -2) return 5;
     rows[3].frame = 6;
     if (bridge.gcs_mission_load(rows.data(), rows.size()) != 3) return 6;
-    std::puts("PASS: supported mission loads; unsupported commands/frames reject atomically");
+    // Replacing a running mission must apply its first NAV immediately. A
+    // repeated AUTO request itself remains idempotent, as in ArduPlane.
+    if (bridge.init(init) != Status::kOk) return 8;
+    MissionItemWire waypoint{};
+    waypoint.east_m = 20000.0f;
+    waypoint.up_m = 500.0f;
+    const ModePayload auto_mode{static_cast<std::uint8_t>(BridgeMode::kAuto)};
+    if (bridge.set_mission(&waypoint, 1) != Status::kOk ||
+        bridge.set_mode(auto_mode) != Status::kOk ||
+        bridge.plane().next_WP_loc.alt != 50000) return 9;
+    waypoint.up_m = 600.0f;
+    const auto home_before_reload = bridge.plane().home;
+    const_cast<fwcpp::vehicle::Plane&>(bridge.plane()).current_loc.lat = 222222;
+    if (bridge.set_mission(&waypoint, 1) != Status::kOk ||
+        bridge.plane().next_WP_loc.alt != 60000) {
+        std::fputs("host replacement did not activate new NAV altitude\n", stderr);
+        return 10;
+    }
+    if (bridge.plane().home.lat != home_before_reload.lat ||
+        bridge.plane().home.lng != home_before_reload.lng ||
+        bridge.plane().home.alt != home_before_reload.alt) return 17;
+    // Test-only sentinel on the non-const fixture; no mutable production API.
+    const_cast<fwcpp::vehicle::Plane&>(bridge.plane()).prev_WP_loc.lat = 123456;
+    if (bridge.set_mode(auto_mode) != Status::kOk ||
+        bridge.plane().prev_WP_loc.lat != 123456) return 11;
+
+    std::array<Bridge::GcsGeoItem, 2> replacement{};
+    replacement[0] = rows[0];
+    replacement[1] = rows[1];
+    replacement[1].command = 16;
+    replacement[1].frame = 3;
+    replacement[1].z = 700.0f;
+    if (bridge.gcs_mission_load(replacement.data(), replacement.size()) != 1 ||
+        bridge.plane().next_WP_loc.alt != 70000) return 12;
+    replacement[1].frame = 10;
+    if (bridge.gcs_mission_load(replacement.data(), replacement.size()) != -2 ||
+        bridge.plane().next_WP_loc.alt != 70000 ||
+        bridge.plane().mission.current()->loc.alt != 70000) return 13;
+
+    const ModePayload manual_mode{static_cast<std::uint8_t>(BridgeMode::kManual)};
+    if (bridge.set_mode(manual_mode) != Status::kOk) return 14;
+    replacement[1].frame = 3;
+    replacement[1].z = 800.0f;
+    if (bridge.gcs_mission_load(replacement.data(), replacement.size()) != 1 ||
+        bridge.current_mode() != BridgeMode::kManual) return 15;
+    if (bridge.set_mode(auto_mode) != Status::kOk ||
+        bridge.plane().next_WP_loc.alt != 80000) return 16;
+    std::puts("PASS: mission validation and active reload; same-mode AUTO stays idempotent");
     return 0;
 }
