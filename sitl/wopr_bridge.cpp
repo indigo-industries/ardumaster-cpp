@@ -1725,6 +1725,13 @@ inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f)
             send_command_ack(g, command, 0);
             break;
         case 176: // MAV_CMD_DO_SET_MODE (param2 = custom mode)
+            // Validate before float-to-integer conversion: fractions must not
+            // select a different mode, and nonfinite/out-of-range casts are unsafe.
+            if (!std::isfinite(p2) || p2 < 0.0f ||
+                static_cast<double>(p2) > 4294967295.0 || std::trunc(p2) != p2) {
+                send_command_ack(g, command, 4);
+                break;
+            }
             send_command_ack(g, command,
                 bridge.gcs_set_mode_custom(static_cast<std::uint32_t>(p2)) ? 0 : 4);
             break;
