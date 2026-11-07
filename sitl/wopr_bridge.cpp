@@ -1687,16 +1687,27 @@ inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f)
         break; // peer already learned from the datagram source
 
     case kMsgIdParamRequestList:
+        if ((p[0] != 0 && p[0] != g.sysid) ||
+            (p[1] != 0 && p[1] != kCompId)) {
+            break;
+        }
         // Minimal parameter surface: enough for a GCS to complete its sync.
         send_param_value(g, "SYSID_THISMAV", static_cast<float>(g.sysid), 1, 0);
         break;
 
     case kMsgIdParamSet: {
-        // Accept-and-echo: no AP_Param storage is wired in this port, so a
-        // set is acknowledged (echoed back) but not persisted anywhere.
+        if ((p[4] != 0 && p[4] != g.sysid) ||
+            (p[5] != 0 && p[5] != kCompId)) {
+            break;
+        }
+        // This port exposes only a read-only identity parameter. A rejected
+        // write reports its current value, never the requested unsaved value.
+        // Unknown names are not members of the advertised parameter table.
         char name[17] = {};
         std::memcpy(name, p + 6, 16);
-        send_param_value(g, name, read_f32_le(p), 1, 0);
+        if (std::strcmp(name, "SYSID_THISMAV") == 0) {
+            send_param_value(g, "SYSID_THISMAV", static_cast<float>(g.sysid), 1, 0);
+        }
         break;
     }
 
