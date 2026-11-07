@@ -1023,6 +1023,10 @@ public:
         std::uint8_t frame = 0;
         float p1 = 0.0f;
         float p2 = 0.0f;
+        // Preserve optional NAV metadata for mission download even where
+        // the current flight stack does not consume pass-by/yaw fields.
+        float p3 = 0.0f;
+        float p4 = 0.0f;
         std::int32_t lat_1e7 = 0;
         std::int32_t lng_1e7 = 0;
         float z = 0.0f;
@@ -1583,6 +1587,8 @@ inline void send_mission_item_int(GcsLink& g, const Bridge::GcsGeoItem& r) {
     std::uint8_t p[38] = {};
     fwcpp::gcs::write_f32_le(p, r.p1);
     fwcpp::gcs::write_f32_le(p + 4, r.p2);
+    fwcpp::gcs::write_f32_le(p + 8, r.p3);
+    fwcpp::gcs::write_f32_le(p + 12, r.p4);
     fwcpp::gcs::write_i32_le(p + 16, r.lat_1e7);
     fwcpp::gcs::write_i32_le(p + 20, r.lng_1e7);
     fwcpp::gcs::write_f32_le(p + 24, r.z);
@@ -1691,6 +1697,8 @@ inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f)
         r.frame = p[34];
         r.p1 = read_f32_le(p);
         r.p2 = read_f32_le(p + 4);
+        r.p3 = read_f32_le(p + 8);
+        r.p4 = read_f32_le(p + 12);
         r.lat_1e7 = read_i32_le(p + 16);
         r.lng_1e7 = read_i32_le(p + 20);
         r.z = read_f32_le(p + 24);

@@ -153,3 +153,26 @@ force gating, idle thrust, eight-second brake holds armed/disarmed, low/absent
 RC failsafe preservation, high-speed yaw parity, and an integrated 180-degree
 turn followed by a stop. It does not prove live terrain contact or obstacle
 clearance; validate wheel tracks and the full aircraft swept footprint separately.
+
+### WOPR MAVLink mission metadata round-trip
+
+Accepted `MISSION_ITEM_INT` rows retain `param3` and `param4` in the GCS
+upload/download cache, including a NaN yaw sentinel. This preserves the
+uploaded plan for review and subsequent downloads; it does not implement
+pass-by or yaw flight behavior in the current Plane mission vocabulary.
+Rejected replacements leave the accepted download cache intact.
+
+Wire regression (Python with `pymavlink`, an existing model JSON):
+
+```sh
+python sitl/wopr_bridge_mission_roundtrip_test.py --exe build/sitl/wopr_bridge.exe --model /path/to/c130.json
+```
+
+The regression starts and cleans up its own bridge process on ports9317/10317
+(overridable with `--port` and `--mavport`). It covers positive/negative optional
+values, NaN yaw and download preservation after a rejected replacement.
+
+For CTest/CI, configure with -DFWCPP_BRIDGE_MAVLINK_TEST=ON and run
+ctest --test-dir build -R wopr_bridge_mission_roundtrip --output-on-failure.
+The option requires pymavlink in the selected Python3_EXECUTABLE and fails
+configuration if that dependency is missing; default builds do not require Python.
