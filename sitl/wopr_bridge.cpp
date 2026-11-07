@@ -1750,8 +1750,9 @@ inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f)
     }
 
     case kMsgIdMissionCount: {
-        if (p[2] != 0 && p[2] != g.sysid) {
-            break; // target_system mismatch on a shared link
+        if (p[2] != 0 &&
+            (p[2] != g.sysid || (p[3] != 0 && p[3] != kCompId))) {
+            break; // ignore other recipients before clearing or starting an upload
         }
         if (p[4] != 0) {
             // Flight, fence and rally plans have independent storage.
