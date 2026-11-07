@@ -1,0 +1,4 @@
+{
+  "loiter_radius": 65535,
+  "rtl_radius": -65535
+}

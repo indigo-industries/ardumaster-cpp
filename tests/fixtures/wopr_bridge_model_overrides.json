@@ -16,7 +16,11 @@
   "ground_steering_max_deg": 65.0,
   "mass": 55000.0,
   "ground_friction": 0.0035,
-  "moment_inertia": [1492857.0, 1492857.0, 2828571.0],
+  "moment_inertia": [
+    1492857.0,
+    1492857.0,
+    2828571.0
+  ],
   "ground_contact_drop_limit_m": 0.5,
   "land_src": 0.125,
   "land_time_const": 3.25,
@@ -24,5 +28,7 @@
   "land_spd_weight": 0.4,
   "landing_rollout_pitch_rate": 1.0,
   "landing_reverse_throttle_pct": 30.0,
-  "ground_brake_pitch_free": 1.0
+  "ground_brake_pitch_free": 1.0,
+  "loiter_radius": 4000,
+  "rtl_radius": -4500
 }
