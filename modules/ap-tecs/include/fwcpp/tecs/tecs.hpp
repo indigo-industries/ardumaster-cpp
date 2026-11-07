@@ -1784,7 +1784,9 @@ private:
     // differs (safely) from upstream's own uninitialised _DT.
     float dt_ = 0.0f;
 
-    bool need_reset_ = false;
+    // A fresh controller needs the same demand/filter initialization as an
+    // explicit reset, even when its first update is within 200 ms of boot.
+    bool need_reset_ = true;
     bool flag_throttle_forced_ = false;
 
     float ske_weighting_ = 0.0f;
