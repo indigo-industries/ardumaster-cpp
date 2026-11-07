@@ -1091,6 +1091,27 @@ public:
         return static_cast<int>(count);
     }
 
+    bool gcs_clear_mission() {
+        if (!initialized_) {
+            return false;
+        }
+        // Reuse this port's mission-complete RTL policy rather than
+        // retaining the deleted AUTO waypoint. Other modes, including
+        // active Qhover/Qland, retain their control ownership.
+        if (plane_.control_mode == &plane_.mode_auto) {
+            if (!plane_.set_mode(plane_.mode_rtl)) {
+                return false;
+            }
+            mode_ = BridgeMode::kRtl;
+        }
+        (void)plane_.mission.load(std::span<const fwcpp::vehicle::MissionItem>{});
+        observe_mission_base();
+        vtol_land_index_ = -1;
+        vtol_land_n_ = 0.0f;
+        vtol_land_e_ = 0.0f;
+        return true;
+    }
+
     void fill_state(StateReply& r) const {
         const fwcpp::sim::SimPlane& plant = active_sim();
         r.initialized = initialized_ ? 1 : 0;
@@ -1565,12 +1586,12 @@ inline void send_mission_request_int(GcsLink& g, std::uint16_t seq) {
     send_frame(g, fwcpp::gcs::kMsgIdMissionRequestInt, p, sizeof(p));
 }
 
-inline void send_mission_ack(GcsLink& g, std::uint8_t type) {
+inline void send_mission_ack(GcsLink& g, std::uint8_t type, std::uint8_t mission_type = 0) {
     std::uint8_t p[4] = {};
     p[0] = 255;
     p[1] = 0;
     p[2] = type; // MAV_MISSION_ACCEPTED = 0
-    p[3] = 0;
+    p[3] = mission_type;
     send_frame(g, fwcpp::gcs::kMsgIdMissionAck, p, sizeof(p));
 }
 
@@ -1669,9 +1690,25 @@ inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f)
         if (p[2] != 0 && p[2] != g.sysid) {
             break; // target_system mismatch on a shared link
         }
+        if (p[4] != 0) {
+            // Flight, fence and rally plans have independent storage.
+            // Unsupported plan types must not mutate our flight plan.
+            send_mission_ack(g, 3 /*MAV_MISSION_UNSUPPORTED*/, p[4]);
+            break;
+        }
         const std::uint16_t count = read_u16_le(p);
-        if (count == 0 || count > kMaxUploadRows) {
-            send_mission_ack(g, count == 0 ? 0 : 1 /*MAV_MISSION_ERROR*/);
+        if (count == 0) {
+            g.up_active = false;
+            if (bridge.gcs_clear_mission()) {
+                g.cached_count = 0;
+                send_mission_ack(g, 0);
+            } else {
+                send_mission_ack(g, 1 /*MAV_MISSION_ERROR*/);
+            }
+            break;
+        }
+        if (count > kMaxUploadRows) {
+            send_mission_ack(g, 1 /*MAV_MISSION_ERROR*/);
             g.up_active = false;
             break;
         }

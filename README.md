@@ -185,3 +185,19 @@ or broadcast system0 remain accepted, consistent with `MISSION_COUNT`.
 The optional MAVLink wire CTest also injects a wrong-system NAV row during an
 active upload, checks that no request/ACK advances, then completes the original
 plan using broadcast rows and verifies its download.
+
+### Empty mission upload
+
+A flight-plan `MISSION_COUNT` of zero clears both the executable plan and the
+GCS download cache before acknowledging success, as required by the
+[MAVLink mission upload protocol](https://mavlink.io/en/services/mission.html#upload-a-plan-to-the-vehicle).
+If the actual controller is in AUTO, the bridge enters RTL using its existing
+mission-complete policy; RTL is a bridge policy, not a protocol requirement.
+Other modes retain control, including active Qhover/Qland. Clearing does not
+arm the vehicle. Only queued mission landing metadata is reset.
+
+Fence and rally `MISSION_COUNT` uploads are unsupported and return an error
+with the requested mission type, preserving the independent flight plan and
+any partial flight upload. `MISSION_CLEAR_ALL` is not added by this change.
+The mission native/wire CTests cover empty storage, control-mode ownership,
+repeated clear, re-upload and cross-plan rejection.
