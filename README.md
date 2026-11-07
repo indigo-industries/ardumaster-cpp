@@ -171,3 +171,8 @@ python sitl/wopr_bridge_mission_roundtrip_test.py --exe build/sitl/wopr_bridge.e
 The regression starts and cleans up its own bridge process on ports9317/10317
 (overridable with `--port` and `--mavport`). It covers positive/negative optional
 values, NaN yaw and download preservation after a rejected replacement.
+
+For CTest/CI, configure with -DFWCPP_BRIDGE_MAVLINK_TEST=ON and run
+ctest --test-dir build -R wopr_bridge_mission_roundtrip --output-on-failure.
+The option requires pymavlink in the selected Python3_EXECUTABLE and fails
+configuration if that dependency is missing; default builds do not require Python.

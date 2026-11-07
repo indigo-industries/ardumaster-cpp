@@ -70,6 +70,22 @@ if(FWCPP_BRIDGE_MODEL_TEST)
         ${CMAKE_SOURCE_DIR}/tests/fixtures/wopr_bridge_model_overrides.json)
 endif()
 target_link_libraries(wopr_bridge PRIVATE ap-hal-sitl ap-gcs)
+
+# Opt-in real-process MAVLink tests require the Python GCS dependency.
+option(FWCPP_BRIDGE_MAVLINK_TEST "Enable WOPR MAVLink wire regressions (pymavlink)" OFF)
+if(FWCPP_BRIDGE_MAVLINK_TEST)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    execute_process(COMMAND ${Python3_EXECUTABLE} -c "import pymavlink"
+        RESULT_VARIABLE FWCPP_PYMAVLINK_IMPORT_RESULT)
+    if(NOT FWCPP_PYMAVLINK_IMPORT_RESULT EQUAL 0)
+        message(FATAL_ERROR "FWCPP_BRIDGE_MAVLINK_TEST requires pymavlink in Python3_EXECUTABLE")
+    endif()
+    add_test(NAME wopr_bridge_mission_roundtrip
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/wopr_bridge_mission_roundtrip_test.py
+            --exe $<TARGET_FILE:wopr_bridge>
+            --model ${CMAKE_SOURCE_DIR}/tests/fixtures/wopr_bridge_model_overrides.json)
+    set_tests_properties(wopr_bridge_mission_roundtrip PROPERTIES RUN_SERIAL TRUE TIMEOUT 30)
+endif()
 if(WIN32)
     target_link_libraries(wopr_bridge PRIVATE ws2_32)
     target_link_options(wopr_bridge PRIVATE -static)
