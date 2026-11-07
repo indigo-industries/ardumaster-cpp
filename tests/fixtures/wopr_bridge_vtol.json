@@ -1,0 +1,5 @@
+{
+  "vtol": 1,
+  "vtol_assist_full_mps": 6,
+  "vtol_assist_zero_mps": 10
+}

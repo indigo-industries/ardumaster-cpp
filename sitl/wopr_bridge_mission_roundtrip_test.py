@@ -72,6 +72,52 @@ try:
     upload(rows,0,inject_wrong_target=True);verify(rows)
     rejected=[dict(r) for r in rows];rejected[1]['command']=17
     upload(rejected,3);verify(rows)
-    print('PASS optional NAV metadata, wrong-target isolation, broadcast items and rejection preservation')
+    # Independent plan types cannot mutate a flight upload/cache.
+    for mission_type in (1,2):
+        for count in (0,len(rows)):
+            gcs.mav.mission_count_send(7,1,count,mission_type)
+            ack=recv(['MISSION_ACK'])
+            assert ack.type==3 and ack.mission_type==mission_type
+            verify(rows)
+    # Also reject a different plan type without aborting a partial flight upload.
+    gcs.mav.mission_count_send(7,1,len(rows),0)
+    assert recv(['MISSION_REQUEST_INT']).seq==0
+    gcs.mav.mission_count_send(7,1,0,1)
+    ack=recv(['MISSION_ACK']);assert ack.type==3 and ack.mission_type==1
+    for i,row in enumerate(rows):
+        gcs.mav.mission_item_int_send(7,1,i,row['frame'],row['command'],int(i==0),1,row['param1'],row['param2'],row['param3'],row['param4'],row['x'],row['y'],row['z'],0)
+        m=recv(['MISSION_REQUEST_INT','MISSION_ACK'])
+        if i+1<len(rows):assert m.get_type()=='MISSION_REQUEST_INT' and m.seq==i+1
+        else:assert m.get_type()=='MISSION_ACK' and m.type==0
+    verify(rows)
+    # Empty upload must clear both the download cache and executable plan.
+    gcs.mav.command_long_send(7,1,176,0,1,10,0,0,0,0,0)
+    assert recv(['COMMAND_ACK']).result==0
+    gcs.mav.mission_count_send(7,1,0,0)
+    assert recv(['MISSION_ACK']).type==0
+    gcs.mav.mission_request_list_send(7,1,0)
+    assert recv(['MISSION_COUNT']).count==0, 'empty upload ACKed but download cache retained'
+    wire.sendto(struct.pack('<IB3xI',0x57534231,2,2)+struct.pack('<H4H',0,0,0,0,0),('127.0.0.1',a.port))
+    cleared=struct.unpack('<I4BI20fHHIBB2x',wire.recvfrom(2048)[0])
+    assert cleared[27]==0, 'empty upload left executable mission loaded'
+    deadline=time.monotonic()+3
+    while True:
+        hb=recv(['HEARTBEAT'])
+        if hb.custom_mode==11:break
+        assert time.monotonic()<deadline, 'cleared AUTO did not exit to RTL'
+    # Non-AUTO clear must not switch pilot control mode.
+    upload(rows,0)
+    gcs.mav.command_long_send(7,1,176,0,1,0,0,0,0,0,0)
+    assert recv(['COMMAND_ACK']).result==0
+    gcs.mav.mission_count_send(7,1,0,0)
+    assert recv(['MISSION_ACK']).type==0
+    gcs.mav.mission_request_list_send(7,1,0)
+    assert recv(['MISSION_COUNT']).count==0
+    deadline=time.monotonic()+3
+    while True:
+        hb=recv(['HEARTBEAT'])
+        if hb.custom_mode==0:break
+        assert time.monotonic()<deadline, 'clear changed MANUAL mode'
+    print('PASS mission metadata, target isolation, rejection and empty upload clearing')
 finally:
     gcs.close();wire.close();process.terminate();process.wait(timeout=5)

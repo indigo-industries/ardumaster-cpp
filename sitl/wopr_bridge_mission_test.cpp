@@ -3,7 +3,9 @@
 #include "wopr_bridge.cpp"
 #undef main
 
-int main() {
+int main(int argc, char** argv) {
+    Bridge uninitialized;
+    if (uninitialized.gcs_clear_mission()) return 18;
     Bridge bridge;
     InitPayload init{};
     init.lat_1e7 = 299675007;
@@ -85,6 +87,27 @@ int main() {
         bridge.current_mode() != BridgeMode::kManual) return 15;
     if (bridge.set_mode(auto_mode) != Status::kOk ||
         bridge.plane().next_WP_loc.alt != 80000) return 16;
-    std::puts("PASS: mission validation and active reload; same-mode AUTO stays idempotent");
+    if (!bridge.gcs_clear_mission() || !bridge.plane().mission.empty() ||
+        bridge.current_mode() != BridgeMode::kRtl) return 19;
+    StateReply cleared{};
+    bridge.fill_state(cleared);
+    if (cleared.mission_count != 0 || cleared.mission_index != 0 || cleared.armed != 0) return 20;
+    if (!bridge.gcs_clear_mission() || bridge.current_mode() != BridgeMode::kRtl) return 21;
+    for (const auto mode : {BridgeMode::kManual, BridgeMode::kLoiter, BridgeMode::kFbwb}) {
+        if (bridge.set_mission(&waypoint, 1) != Status::kOk ||
+            bridge.set_mode(ModePayload{static_cast<std::uint8_t>(mode)}) != Status::kOk ||
+            !bridge.gcs_clear_mission() || !bridge.plane().mission.empty() ||
+            bridge.current_mode() != mode) return 22;
+    }
+    if (argc != 2 || std::strlen(argv[1]) >= sizeof(init.model_json)) return 23;
+    std::strcpy(init.model_json, argv[1]);
+    if (bridge.init(init) != Status::kOk) return 24;
+    for (const auto mode : {BridgeMode::kQhover, BridgeMode::kQland}) {
+        if (bridge.set_mission(&waypoint, 1) != Status::kOk ||
+            bridge.set_mode(ModePayload{static_cast<std::uint8_t>(mode)}) != Status::kOk ||
+            !bridge.gcs_clear_mission() || !bridge.plane().mission.empty() ||
+            bridge.current_mode() != mode) return 25;
+    }
+    std::puts("PASS: mission validation, reload and empty-plan control ownership");
     return 0;
 }
