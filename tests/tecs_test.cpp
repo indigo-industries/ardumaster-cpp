@@ -749,15 +749,19 @@ TEST_CASE("fresh TECS demand filters initialize at current height independent of
         }
         // Explicit reset and stale-call reset must retain their existing behavior.
         tecs.reset();
+        in.relative_position_d_home_m = -600.0f;
+        in.baro_altitude_m = 600.0f;
         in.now_us += 20'000;
         in.now_ms += 20;
         tecs.update_50hz(in);
-        tecs.update_pitch_throttle(50'000, 1200, 500.0f, 1.0f, in);
-        REQUIRE(tecs.get_hgt_dem() == Catch::Approx(500.0f).margin(.01f));
+        tecs.update_pitch_throttle(60'000, 1200, 600.0f, 1.0f, in);
+        REQUIRE(tecs.get_hgt_dem() == Catch::Approx(600.0f).margin(.01f));
+        in.relative_position_d_home_m = -700.0f;
+        in.baro_altitude_m = 700.0f;
         in.now_us += 2'000'000;
         in.now_ms += 2000;
         tecs.update_50hz(in);
-        tecs.update_pitch_throttle(50'000, 1200, 500.0f, 1.0f, in);
-        REQUIRE(tecs.get_hgt_dem() == Catch::Approx(500.0f).margin(.01f));
+        tecs.update_pitch_throttle(70'000, 1200, 700.0f, 1.0f, in);
+        REQUIRE(tecs.get_hgt_dem() == Catch::Approx(700.0f).margin(.01f));
     }
 }
