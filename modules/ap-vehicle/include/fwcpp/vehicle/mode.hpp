@@ -243,12 +243,12 @@ inline void ModeCRUISE::navigate(const StabilizeInputs& in) {
 
 inline bool ModeAUTO::enter() {
     // CPP-031 slice 7 - see plane.hpp's own "HOME-BEFORE-AUTO-RTL" note:
-    // a real, minimal fallback for a caller that never called
-    // plane.set_home() at all - treats "home is still exactly the
-    // untouched default Location()" as "never explicitly set", and sets
-    // it to wherever THIS mission is starting from. Does NOT override any
-    // other value a caller may have already set.
-    if (plane_.home.lat == 0 && plane_.home.lng == 0 && plane_.home.alt == 0) {
+    // Fall back only when the setter was never called and the public
+    // location is untouched. An explicitly supplied origin is a valid
+    // home, including for an airborne vehicle away from that origin.
+    // Retain the value check for legacy direct nonzero home assignments.
+    if (!plane_.home_has_been_set() &&
+        plane_.home.lat == 0 && plane_.home.lng == 0 && plane_.home.alt == 0) {
         plane_.set_home(plane_.current_loc);
     }
 

@@ -119,7 +119,8 @@ try:
         hb=recv(['HEARTBEAT'])
         if hb.custom_mode==11:break
         assert time.monotonic()<deadline, 'cleared AUTO did not exit to RTL'
-    nav=navigation_values({'RAD_BASE','RAD_EFF','EAS2TAS','LOIT_DIR'})
+    nav=navigation_values({'RAD_BASE','RAD_EFF','EAS2TAS','LOIT_DIR','HOME_UP','TGT_UP'})
+    assert nav['HOME_UP']==0 and nav['TGT_UP']==100,nav
     expected=int(abs(model.get('rtl_radius',0)))
     if expected<=1:
         loiter=model.get('loiter_radius',60)

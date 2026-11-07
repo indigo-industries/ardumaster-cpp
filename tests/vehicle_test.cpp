@@ -6995,3 +6995,44 @@ TEST_CASE("Closed loop: a genuine tick()-driven AirspeedSensor reading (SimPlane
     // margin.
     REQUIRE(std::fabs(with_sensor.final_speed_scaler - without_sensor.final_speed_scaler) > 0.2f);
 }
+
+TEST_CASE("Explicit origin home survives AUTO entry away from origin", "[vehicle][home]") {
+    Plane plane;
+    plane.current_loc = make_loc(100.0f, 200.0f, 500.0f);
+    plane.set_home(fwcpp::Location());
+    REQUIRE(plane.set_mode(plane.mode_auto));
+    CHECK(plane.home.lat == 0);
+    CHECK(plane.home.lng == 0);
+    CHECK(plane.home.alt == 0);
+}
+
+TEST_CASE("AUTO home fallback preserves setter and legacy home ownership", "[vehicle][home]") {
+    Plane never_set;
+    never_set.current_loc = make_loc(100.0f, 200.0f, 500.0f);
+    CHECK_FALSE(never_set.home_has_been_set());
+    REQUIRE(never_set.set_mode(never_set.mode_auto));
+    CHECK(never_set.home_has_been_set());
+    CHECK(never_set.home.lat == never_set.current_loc.lat);
+    CHECK(never_set.home.lng == never_set.current_loc.lng);
+    CHECK(never_set.home.alt == never_set.current_loc.alt);
+    const auto first_home = never_set.home;
+    REQUIRE(never_set.set_mode(never_set.mode_manual));
+    never_set.current_loc = make_loc(500.0f, 600.0f, 700.0f);
+    REQUIRE(never_set.set_mode(never_set.mode_auto));
+    CHECK(never_set.home.lat == first_home.lat);
+    CHECK(never_set.home.lng == first_home.lng);
+    CHECK(never_set.home.alt == first_home.alt);
+
+    Plane legacy;
+    legacy.home = make_loc(10.0f, 20.0f, 30.0f);
+    const auto legacy_home = legacy.home;
+    legacy.current_loc = make_loc(100.0f, 200.0f, 500.0f);
+    REQUIRE(legacy.set_mode(legacy.mode_auto));
+    CHECK(legacy.home.lat == legacy_home.lat);
+    CHECK(legacy.home.lng == legacy_home.lng);
+    CHECK(legacy.home.alt == 3000);
+    CHECK_FALSE(legacy.home_has_been_set()); // direct assignment did not call setter
+    Plane fresh;
+    CHECK_FALSE(fresh.home_has_been_set());
+    CHECK(fresh.home.alt == 0);
+}
