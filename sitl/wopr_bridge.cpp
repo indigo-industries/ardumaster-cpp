@@ -535,6 +535,20 @@ public:
         fwcpp::sim::json_get_float(obj, "airspeed_cruise", plane_.aparm.airspeed_cruise);
         fwcpp::sim::json_get_float(obj, "airspeed_max", plane_.aparm.airspeed_max);
         fwcpp::sim::json_get_float(obj, "scaling_speed", plane_.aparm.scaling_speed);
+        for (const auto& entry : {std::pair{"loiter_radius", &plane_.aparm.loiter_radius},
+                                  std::pair{"rtl_radius", &plane_.aparm.rtl_radius}}) {
+            if (obj.get(entry.first) == nullptr) { continue; }
+            float value = 0.0f;
+            if (!fwcpp::sim::json_get_float(obj, entry.first, value) ||
+                !std::isfinite(value) || std::fabs(value) > 65535.0f) {
+                std::printf("model rejected: %s must be finite and within +/-65535 metres\n", entry.first);
+                return false;
+            }
+            *entry.second = value;
+        }
+        std::printf("model navigation radii: loiter_radius=%.6g rtl_radius=%.6g metres\n",
+                    plane_.aparm.loiter_radius, plane_.aparm.rtl_radius);
+        std::fflush(stdout);
         float nav_period = 17.0f;
         fwcpp::sim::json_get_float(obj, "nav_l1_period", nav_period);
         plane_.nav_controller.set_default_period(fwcpp::math::constrain_value(nav_period, 1.0f, 120.0f));
@@ -1566,6 +1580,36 @@ inline void send_landing_diagnostics(GcsLink& g, const Bridge& b) {
     send("HAGL", b.sim().hagl()); // unrounded plant clearance for contact/bounce verification
 }
 
+// Slow applied-value diagnostics; these are demands/settings, not proof
+// that the physical aircraft achieved the requested orbit.
+inline void send_navigation_diagnostics(GcsLink& g, const Bridge& b) {
+    auto send = [&](const char* name, float value) {
+        std::uint8_t p[18] = {};
+        fwcpp::gcs::write_u32_le(p, b.sim_time_ms());
+        fwcpp::gcs::write_f32_le(p + 4, value);
+        std::memcpy(p + 8, name, std::min(std::strlen(name), std::size_t{10}));
+        send_frame(g, fwcpp::gcs::kMsgIdNamedValueFloat, p, sizeof(p));
+    };
+    const auto& plane = b.plane();
+    const bool loitering = b.current_mode() == BridgeMode::kRtl || b.current_mode() == BridgeMode::kLoiter;
+    // Observe the controller's last consumed radius, not a duplicate of
+    // its fallback/quantization rules. It can be zero before first navigate.
+    const float radius = loitering ? plane.loiter.radius : 0.0f;
+    fwcpp::nav::L1Inputs in;
+    in.eas2tas = b.sim().eas2tas;
+    in.target_airspeed = 0.0f; // same as Plane::build_l1_inputs()
+    send("LOIT_RAD", plane.aparm.loiter_radius);
+    send("RTL_RAD", plane.aparm.rtl_radius);
+    send("RAD_BASE", radius);
+    send("RAD_EFF", radius > 0.0f ? plane.nav_controller.loiter_radius(radius, in) : 0.0f);
+    send("EAS2TAS", in.eas2tas);
+    send("LOIT_DIR", loitering ? static_cast<float>(plane.loiter.direction) : 0.0f);
+    send("NAV_ROLL", plane.nav_roll_cd * 0.01f);
+    send("HOME_UP", plane.home.alt * 0.01f);
+    send("TGT_UP", plane.target_altitude_cm * 0.01f);
+    send("WP_DIST", plane.current_loc.get_distance(plane.next_WP_loc));
+}
+
 inline void send_param_value(GcsLink& g, const char* name, float value,
                              std::uint16_t count, std::uint16_t index) {
     std::uint8_t p[25] = {};
@@ -1922,6 +1966,9 @@ int main(int argc, char** argv) {
             now_wall - gcs.last_hb >= std::chrono::seconds(1)) {
             gcs.last_hb = now_wall;
             mavgcs::send_heartbeat(gcs, bridge);
+            if (bridge.is_initialized()) {
+                mavgcs::send_navigation_diagnostics(gcs, bridge);
+            }
         }
 
         if (ready <= 0) {

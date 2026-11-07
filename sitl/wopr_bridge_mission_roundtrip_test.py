@@ -5,6 +5,7 @@ or yaw flight behavior. Run with --exe build/sitl/wopr_bridge.exe --model PATH.
 """
 import argparse
 import math
+import json
 from pathlib import Path
 import socket
 import struct
@@ -33,6 +34,13 @@ def recv(types):
         if m and m.get_srcSystem()==7 and m.get_type() in types:
             return m
     raise TimeoutError(types)
+def navigation_values(keys):
+    values={};deadline=time.monotonic()+4
+    while not keys.issubset(values) and time.monotonic()<deadline:
+        message=recv(['NAMED_VALUE_FLOAT'])
+        values[message.name]=message.value
+    assert keys.issubset(values), values
+    return values
 def upload(rows, expected, inject_wrong_target=False):
     gcs.mav.mission_count_send(7, 1, len(rows), 0)
     while True:
@@ -65,6 +73,10 @@ try:
     wire.sendto(struct.pack('<IB3xI',0x57534231,1,1)+payload,('127.0.0.1',a.port))
     reply=struct.unpack('<I4BI20fHHIBB2x',wire.recvfrom(2048)[0]);assert reply[2]==0
     recv(['HEARTBEAT'])
+    model=json.loads(a.model.read_text(encoding='utf-8'))
+    nav=navigation_values({'LOIT_RAD','RTL_RAD'})
+    assert nav['LOIT_RAD']==model.get('loiter_radius',60),nav
+    assert nav['RTL_RAD']==model.get('rtl_radius',0),nav
     rows=[]
     for i in range(4):
         rows.append(dict(seq=i,frame=0,command=16,param1=0.,param2=250.,param3=42.5 if i==1 else -7.25 if i==2 else 0.,param4=135. if i==1 else float('nan') if i==2 else -90.,x=333000000,y=-1122000000+i*100000,z=4000.))
@@ -100,11 +112,22 @@ try:
     wire.sendto(struct.pack('<IB3xI',0x57534231,2,2)+struct.pack('<H4H',0,0,0,0,0),('127.0.0.1',a.port))
     cleared=struct.unpack('<I4BI20fHHIBB2x',wire.recvfrom(2048)[0])
     assert cleared[27]==0, 'empty upload left executable mission loaded'
+    wire.sendto(struct.pack('<IB3xI',0x57534231,2,3)+struct.pack('<H4H',1,0,0,0,0),('127.0.0.1',a.port))
+    assert struct.unpack('<I4BI20fHHIBB2x',wire.recvfrom(2048)[0])[2]==0
     deadline=time.monotonic()+3
     while True:
         hb=recv(['HEARTBEAT'])
         if hb.custom_mode==11:break
         assert time.monotonic()<deadline, 'cleared AUTO did not exit to RTL'
+    nav=navigation_values({'RAD_BASE','RAD_EFF','EAS2TAS','LOIT_DIR'})
+    expected=int(abs(model.get('rtl_radius',0)))
+    if expected<=1:
+        loiter=model.get('loiter_radius',60)
+        expected=60 if abs(loiter)<=1 else int(abs(loiter))
+    assert nav['RAD_BASE']==expected,nav
+    assert abs(nav['RAD_EFF']-expected*nav['EAS2TAS']**2)<.1,nav
+    direction_radius=model.get('rtl_radius',0) if int(abs(model.get('rtl_radius',0)))>1 else model.get('loiter_radius',60)
+    assert nav['LOIT_DIR']==(-1 if direction_radius<0 else 1),nav
     # Non-AUTO clear must not switch pilot control mode.
     upload(rows,0)
     gcs.mav.command_long_send(7,1,176,0,1,0,0,0,0,0,0)

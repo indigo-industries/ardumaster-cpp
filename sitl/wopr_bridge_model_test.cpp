@@ -22,7 +22,8 @@ struct ModelLoaderTestAccess {
         return reply.airspeed_mps == 100.0f;
     }
     static bool overrides(Bridge& b) {
-        return b.plane_.pitch_controller.rate_pid().kP() == .2f &&
+        return b.plane_.aparm.loiter_radius == 4000.0f && b.plane_.aparm.rtl_radius == -4500.0f &&
+               b.plane_.pitch_controller.rate_pid().kP() == .2f &&
                b.plane_.pitch_controller.rate_pid().kI() == .16f &&
                b.plane_.pitch_controller.rate_pid().kD() == .01f &&
                b.plane_.pitch_controller.rate_pid().ff() == .4f &&
@@ -46,7 +47,8 @@ struct ModelLoaderTestAccess {
                b.plane_.tecs.mutable_gains().land_sink_rate_change == 0.125f;
     }
     static bool defaults(Bridge& b) {
-        return b.plane_.pitch_controller.rate_pid().kP() == .04f &&
+        return b.plane_.aparm.loiter_radius == 60.0f && b.plane_.aparm.rtl_radius == 0.0f &&
+               b.plane_.pitch_controller.rate_pid().kP() == .04f &&
                b.plane_.pitch_controller.rate_pid().kI() == .15f &&
                b.plane_.pitch_controller.rate_pid().kD() == 0.0f &&
                b.plane_.pitch_controller.rate_pid().ff() == .345f &&
@@ -102,7 +104,7 @@ int main(int argc, char** argv) {
     }
     const std::string fixture_path = argv[1];
     const std::string fixture_dir = fixture_path.substr(0, fixture_path.find_last_of("/\\") + 1);
-    for (const char* file : {"wopr_pitch_negative.json", "wopr_pitch_nonnumeric.json", "wopr_pitch_overflow.json"}) {
+    for (const char* file : {"wopr_pitch_negative.json", "wopr_pitch_nonnumeric.json", "wopr_pitch_overflow.json", "wopr_radius_nonnumeric.json", "wopr_radius_overflow.json", "wopr_radius_range.json"}) {
         const std::string invalid = fixture_dir + file;
         if (invalid.size() >= sizeof(p.model_json)) { return 2; }
         std::strcpy(p.model_json, invalid.c_str());

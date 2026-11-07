@@ -201,3 +201,33 @@ with the requested mission type, preserving the independent flight plan and
 any partial flight upload. `MISSION_CLEAR_ALL` is not added by this change.
 The mission native/wire CTests cover empty storage, control-mode ownership,
 repeated clear, re-upload and cross-plan rejection.
+
+### Model navigation radii and applied diagnostics
+
+Optional `loiter_radius` (WP_LOITER_RAD) and `rtl_radius` (RTL_RADIUS) are
+signed metres, finite and within[-65535,65535]. Negative selects counterclockwise.
+Omitted keys retain60/0 and re-INIT resets omitted overrides. Existing controller
+integer-metre consumption/fallback is preserved: RTL absolute values truncate to
+uint16;0/1 fall back to general loiter radius; general absolute values<=1 use60m.
+These are control demands, not bank-feasible radius guarantees. No stock model
+radius is changed by this feature. Test feasible values before operational use.
+
+At1Hz, timestamped MAVLink NAMED_VALUE_FLOAT diagnostics report:
+
+| Name | Meaning |
+|---|---|
+| LOIT_RAD / RTL_RAD | Configured signed radii, metres |
+| RAD_BASE | Controller last-consumed radius, metres; zero outside RTL/LOITER |
+| RAD_EFF | That radius scaled by current L1 EAS/TAS inputs; zero before consumption |
+| EAS2TAS | Current plant conversion factor |
+| LOIT_DIR | Controller direction(-1/+1), zero outside RTL/LOITER |
+| NAV_ROLL | Controller roll demand, degrees |
+| HOME_UP / TGT_UP | Autopilot home/target altitude above the bridge start datum, metres |
+| WP_DIST | Controller distance to next waypoint/loiter centre, metres |
+
+RAD_EFF is not measured orbit radius or evidence of capture. HOME_UP/TGT_UP are
+local values, not HAE/MSL. Drain telemetry promptly and check timestamps before
+using diagnostics to assess response. Native and wire regressions cover reader
+consumers/default reset, invalid input, signed boundary/fractional fallback,
+direction, and the diagnostic fields. Aircraft tuning requires separate flight
+validation; these settings do not automatically compensate for an infeasible orbit.
