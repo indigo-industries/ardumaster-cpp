@@ -1,4 +1,4 @@
-"""Malformed custom mode values must reject before changing active AUTO."""
+"""COMMAND_LONG target routing preserves AUTO for other recipients and accepts broadcasts."""
 import argparse,os,socket,subprocess,struct,time,math
 os.environ['MAVLINK20']='1'
 from pymavlink import mavutil
@@ -33,3 +33,4 @@ try:
   assert command(10)==0
  print('target component/system isolation and broadcasts PASS')
 finally:g.close();wire.close();proc.terminate();proc.wait(timeout=5)
+
