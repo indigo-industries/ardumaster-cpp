@@ -90,6 +90,11 @@ if(FWCPP_BRIDGE_MAVLINK_TEST)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/wopr_bridge_parameter_test.py
             --exe $<TARGET_FILE:wopr_bridge>)
     set_tests_properties(wopr_bridge_parameter_truth PROPERTIES RUN_SERIAL TRUE TIMEOUT 30)
+    add_test(NAME wopr_bridge_invalid_mode
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/wopr_bridge_invalid_mode_test.py
+            --exe $<TARGET_FILE:wopr_bridge>
+            --model ${CMAKE_SOURCE_DIR}/tests/fixtures/wopr_bridge_model_overrides.json)
+    set_tests_properties(wopr_bridge_invalid_mode PROPERTIES RUN_SERIAL TRUE TIMEOUT 30)
     foreach(radius_case fallback boundary)
         add_test(NAME wopr_bridge_radius_${radius_case}
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/wopr_bridge_mission_roundtrip_test.py
