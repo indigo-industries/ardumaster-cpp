@@ -1,7 +1,7 @@
-"""Real MAVLink mission metadata and active-upload target isolation.
+"""Real MAVLink consumed-coordinate validation and rejected-plan preservation.
 
-Requires pymavlink. These fields round-trip; this does not implement pass-by
-or yaw flight behavior. Run with --exe build/sitl/wopr_bridge.exe --model PATH.
+Requires pymavlink. Optional yaw metadata remains accepted; this is wire/cache validation,
+not physical waypoint-arrival or yaw behavior. Run with --exe build/sitl/wopr_bridge.exe --model PATH.
 """
 import argparse
 import math
