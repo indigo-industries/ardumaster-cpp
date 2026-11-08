@@ -1079,6 +1079,23 @@ public:
             default:
                 return -3; // MAV_MISSION_UNSUPPORTED; preserve previous mission/cache
             }
+            if (r.lat_1e7 < -900000000 || r.lat_1e7 > 900000000) {
+                return -10; // MAV_MISSION_INVALID_PARAM5_X
+            }
+            if (r.lng_1e7 < -1800000000 || r.lng_1e7 > 1800000000) {
+                return -11; // MAV_MISSION_INVALID_PARAM6_Y
+            }
+            const bool relative = (r.frame == 3) || (r.frame == 6);
+            const float up_m = relative ? r.z : (r.z - home_alt_m);
+            const float up_cm = up_m * 100.0f;
+            // Location stores centimetres in int32. Validate the actual float
+            // product before set_alt_m casts it; this is a representation
+            // limit, not an operational altitude restriction.
+            if (!std::isfinite(r.z) || !std::isfinite(up_cm) ||
+                static_cast<double>(up_cm) < -2147483648.0 ||
+                static_cast<double>(up_cm) > 2147483647.0) {
+                return -12; // MAV_MISSION_INVALID_PARAM7
+            }
             fwcpp::Location wp;
             wp.lat = r.lat_1e7;
             wp.lng = r.lng_1e7;
@@ -1086,8 +1103,6 @@ public:
             m.loc = fwcpp::Location();
             m.loc.offset(ne.x, ne.y);
             // Frames: 0/5 absolute (rebased on the start alt), 3/6 relative.
-            const bool relative = (r.frame == 3) || (r.frame == 6);
-            const float up_m = relative ? r.z : (r.z - home_alt_m);
             m.loc.set_alt_m(up_m, fwcpp::Location::AltFrame::ABSOLUTE);
             if (count >= fwcpp::vehicle::kMaxMissionItems) {
                 return -4; // MAV_MISSION_NO_SPACE
