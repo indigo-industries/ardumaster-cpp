@@ -119,6 +119,10 @@ if(FWCPP_BRIDGE_MAVLINK_TEST)
             --exe $<TARGET_FILE:wopr_bridge>
             --model ${CMAKE_SOURCE_DIR}/tests/fixtures/wopr_bridge_model_overrides.json)
     set_tests_properties(wopr_bridge_mission_component PROPERTIES RUN_SERIAL TRUE TIMEOUT 30)
+    add_test(NAME wopr_bridge_height_reference
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/wopr_bridge_height_reference_test.py
+            --exe $<TARGET_FILE:wopr_bridge> --port 29359 --mavport 30359)
+    set_tests_properties(wopr_bridge_height_reference PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
     add_test(NAME wopr_bridge_upload_lifecycle
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/wopr_bridge_upload_lifecycle_test.py
             --exe $<TARGET_FILE:wopr_bridge> --model ${CMAKE_SOURCE_DIR}/tests/fixtures/wopr_bridge_model_overrides.json
