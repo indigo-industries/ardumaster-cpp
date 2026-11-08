@@ -1823,6 +1823,12 @@ inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f)
             (p[32] != g.sysid || (p[33] != 0 && p[33] != kCompId))) {
             break; // another recipient's row must not advance our upload
         }
+        if (p[37] != 0) {
+            // Fence/rally rows cannot enter the independent flight-plan upload.
+            // Preserve its pending sequence, cached plan and executable mission.
+            send_mission_ack(g, 3 /*MAV_MISSION_UNSUPPORTED*/, p[37]);
+            break;
+        }
         if (!g.up_active) {
             break;
         }

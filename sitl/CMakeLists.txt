@@ -54,6 +54,13 @@ if(FWCPP_BRIDGE_MODEL_TEST)
     endif()
     add_test(NAME wopr_bridge_mission COMMAND wopr_bridge_mission_test
         ${CMAKE_SOURCE_DIR}/tests/fixtures/wopr_bridge_vtol.json)
+    add_executable(wopr_bridge_item_type_test wopr_bridge_item_type_test.cpp)
+    target_link_libraries(wopr_bridge_item_type_test PRIVATE ap-hal-sitl ap-gcs)
+    if(WIN32)
+        target_link_libraries(wopr_bridge_item_type_test PRIVATE ws2_32)
+        target_link_options(wopr_bridge_item_type_test PRIVATE -static)
+    endif()
+    add_test(NAME wopr_bridge_item_type COMMAND wopr_bridge_item_type_test)
     add_executable(wopr_bridge_arming_test wopr_bridge_arming_test.cpp)
     target_link_libraries(wopr_bridge_arming_test PRIVATE ap-hal-sitl ap-gcs)
     if(WIN32)
@@ -105,6 +112,10 @@ if(FWCPP_BRIDGE_MAVLINK_TEST)
             --exe $<TARGET_FILE:wopr_bridge>
             --model ${CMAKE_SOURCE_DIR}/tests/fixtures/wopr_bridge_model_overrides.json)
     set_tests_properties(wopr_bridge_mission_component PROPERTIES RUN_SERIAL TRUE TIMEOUT 30)
+    add_test(NAME wopr_bridge_item_type_wire
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/wopr_bridge_item_type_wire_test.py
+            --exe $<TARGET_FILE:wopr_bridge> --model ${CMAKE_SOURCE_DIR}/tests/fixtures/wopr_bridge_model_overrides.json)
+    set_tests_properties(wopr_bridge_item_type_wire PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
     add_test(NAME wopr_bridge_item_component
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/wopr_bridge_item_component_test.py
             --exe $<TARGET_FILE:wopr_bridge>
