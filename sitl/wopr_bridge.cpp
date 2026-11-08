@@ -1810,7 +1810,7 @@ inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f)
             break;
         }
         if (count > kMaxUploadRows) {
-            send_mission_ack(g, 1 /*MAV_MISSION_ERROR*/);
+            send_mission_ack(g, 4 /*MAV_MISSION_NO_SPACE*/);
             g.up_active = false;
             break;
         }
