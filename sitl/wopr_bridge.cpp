@@ -1686,7 +1686,7 @@ inline void send_mission_item_int(GcsLink& g, const Bridge::GcsGeoItem& r) {
 inline void send_command_ack(GcsLink& g, std::uint16_t command, std::uint8_t result) {
     std::uint8_t p[3] = {};
     fwcpp::gcs::write_u16_le(p, command);
-    p[2] = result; // MAV_RESULT_ACCEPTED=0 / UNSUPPORTED=3 / FAILED=4
+    p[2] = result; // ACCEPTED=0 / UNSUPPORTED=3 / FAILED=4 / COMMAND_LONG_ONLY=7
     send_frame(g, fwcpp::gcs::kMsgIdCommandAck, p, sizeof(p));
 }
 
@@ -1723,6 +1723,22 @@ inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f)
         if (std::strcmp(name, "SYSID_THISMAV") == 0) {
             send_param_value(g, "SYSID_THISMAV", static_cast<float>(g.sysid), 1, 0);
         }
+        break;
+    }
+
+    case kMsgIdCommandInt: {
+        const std::uint8_t target_sys = p[30];
+        if (target_sys != 0 &&
+            (target_sys != g.sysid || (p[31] != 0 && p[31] != kCompId))) {
+            break;
+        }
+        const std::uint16_t command = read_u16_le(p + 28);
+        // This minimal endpoint implements these commands only in LONG.
+        // Give the sender a terminal format result without executing INT
+        // parameters or making it retry indefinitely on a silent timeout.
+        const bool long_only = command == 400 || command == 176 ||
+                               command == 20 || command == 22;
+        send_command_ack(g, command, long_only ? 7 : 3);
         break;
     }
 

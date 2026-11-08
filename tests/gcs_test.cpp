@@ -931,3 +931,20 @@ TEST_CASE("leftover_send_attitude short buffer returns 0", "[gcs][attitude]") {
     std::array<std::uint8_t, 8> too_small{};
     REQUIRE(leftover_send_attitude(in, too_small) == 0);
 }
+
+TEST_CASE("COMMAND_INT fixture decodes with the common dialect CRC extra", "[gcs][framing]") {
+    // Independent pymavlink-generated v2 packet: cmd176, sys7/comp1,
+    // frame6, p1=1, p2=6; trailing current/autocontinue zeros truncated.
+    std::array<std::uint8_t,45> wire = {0xfd,0x21,0x00,0x00,0x00,0xff,0xbe,0x4b,0x00,0x00,0x00,0x00,0x80,0x3f,0x00,0x00,0xc0,0x40,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xb0,0x00,0x07,0x01,0x06,0x35,0x18};
+    auto decoded = decode_v2(wire);
+    REQUIRE(decoded.has_value());
+    REQUIRE(decoded.value().msgid == 75);
+    REQUIRE(fwcpp::gcs::read_u16_le(decoded.value().payload.data()+28) == 176);
+    REQUIRE(decoded.value().payload[30] == 7);
+    REQUIRE(decoded.value().payload[31] == 1);
+    REQUIRE(decoded.value().payload[32] == 6);
+    wire.back() ^= 1;
+    auto corrupt = decode_v2(wire);
+    REQUIRE_FALSE(corrupt.has_value());
+    REQUIRE(corrupt.error() == DecodeError::kBadCrc);
+}
