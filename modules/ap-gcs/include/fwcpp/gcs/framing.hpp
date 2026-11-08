@@ -26,6 +26,7 @@ inline constexpr std::uint32_t kMsgIdAttitude = 30;
 inline constexpr std::uint32_t kMsgIdMissionCount = 44;
 inline constexpr std::uint32_t kMsgIdMissionRequestInt = 51;
 inline constexpr std::uint32_t kMsgIdMissionItemInt = 73;
+inline constexpr std::uint32_t kMsgIdCommandInt = 75;
 inline constexpr std::uint32_t kMsgIdCommandLong = 76;
 inline constexpr std::uint32_t kMsgIdCommandAck = 77;
 // WOPR-BRIDGE additions (2026-08-31): the GCS-facing message set a live
@@ -47,6 +48,7 @@ inline constexpr std::uint32_t kMsgIdNamedValueFloat = 251;
 // ATTITUDE = 39 msgid 30;
 // MISSION_COUNT = 221 msgid 44; MISSION_REQUEST_INT = 196 msgid 51;
 // MISSION_ITEM_INT = 38 msgid 73;
+// COMMAND_INT.crc_extra = 158 msgid 75;
 // COMMAND_LONG.crc_extra = 152 msgid 76; COMMAND_ACK.crc_extra = 143 msgid 77.
 inline constexpr std::uint8_t kHeartbeatCrcExtra = 50;
 inline constexpr std::uint8_t kParamRequestListCrcExtra = 159;
@@ -56,6 +58,7 @@ inline constexpr std::uint8_t kAttitudeCrcExtra = 39;
 inline constexpr std::uint8_t kMissionCountCrcExtra = 221;
 inline constexpr std::uint8_t kMissionRequestIntCrcExtra = 196;
 inline constexpr std::uint8_t kMissionItemIntCrcExtra = 38;
+inline constexpr std::uint8_t kCommandIntCrcExtra = 158;
 inline constexpr std::uint8_t kCommandLongCrcExtra = 152;
 inline constexpr std::uint8_t kCommandAckCrcExtra = 143;
 // GLOBAL_POSITION_INT = 104 msgid 33; MISSION_REQUEST_LIST = 132 msgid 43;
@@ -127,6 +130,10 @@ enum class DecodeError : std::uint8_t {
 [[nodiscard]] inline constexpr bool crc_extra(std::uint32_t msgid, std::uint8_t& extra) {
     if (msgid == kMsgIdHeartbeat) {
         extra = kHeartbeatCrcExtra;
+        return true;
+    }
+    if (msgid == kMsgIdCommandInt) {
+        extra = kCommandIntCrcExtra;
         return true;
     }
     if (msgid == kMsgIdCommandLong) {
