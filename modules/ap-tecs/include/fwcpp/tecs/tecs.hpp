@@ -760,7 +760,7 @@ public:
     // internal demand-shaping state needed to diagnose height/airspeed
     // tracking at non-default airframe scales from outside the class.
     struct DebugState {
-        float hgt_dem_in = 0.0f;       // raw demanded height this tick (m)
+        float hgt_dem_in = 0.0f;       // saturation-conditioned input before averaging/slew (m)
         float hgt_dem_rate_ltd = 0.0f; // after the climb/sink slew limiter
         float hgt_dem = 0.0f;          // final lagged height demand
         float hgt_rate_dem = 0.0f;     // demanded height rate (m/s)

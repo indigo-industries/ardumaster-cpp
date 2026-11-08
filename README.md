@@ -101,10 +101,17 @@ residues of at most10micrometres/s no longer break support on small terrain drop
 The already-grounded, forward-only and configured drop-limit gates remain; actual
 upward motion and large drops retain free flight.
 
-The GCS stream includes MAVLink `NAMED_VALUE_FLOAT` at10Hz: LAND_ACT, FLARE,
+The GCS stream includes MAVLink `NAMED_VALUE_FLOAT` at approximately10Hz wall time while stepping: LAND_ACT, FLARE,
 ROLLOUT, NAV_PITCH (deg), LAND_HGT (m above landing target), SINK_EST/SINK_DEM
 (m/s positive down), PITCH_DEM (TECS deg before rollout override), TECS_TC (s).
-LAND_ACT gives validity context. Controller diagnostics are computed before the
+HDM_IN/HDM_LTD/HDM_ACT expose local-frame height references in metres:
+conditioned TECS input before averaging/slew, climb/sink slew-limited demand,
+and effective height used by the potential-energy controller, respectively.
+HDM_IN is not the raw waypoint target (TGT_UP); saturation can hold its input.
+These are demands, not measured HAE/MSL altitude. In modes that do not update
+TECS (such as FBWA), values can remain held while message timestamps advance;
+the timestamp records observation time, not controller-calculation freshness.
+LAND_ACT gives landing validity context. Controller diagnostics are computed before the
 plant step, while ATTITUDE/GLOBAL_POSITION_INT follow it: allow a20ms phase offset
 despite matching time_boot_ms. Additional fields are AHRS_PITCH (estimated deg),
 ELEVATOR (normalized command), WHEEL_BRAK (brake fraction), BRAKE_ACC (last plant

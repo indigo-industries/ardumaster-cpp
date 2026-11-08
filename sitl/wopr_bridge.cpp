@@ -1589,6 +1589,10 @@ inline void send_landing_diagnostics(GcsLink& g, const Bridge& b) {
     send("SINK_DEM", -d.hgt_rate_dem);
     send("PITCH_DEM", b.plane().tecs.get_pitch_demand() * 0.01f);
     send("TECS_TC", d.active_time_const);
+    send("HDM_IN", d.hgt_dem_in);        // conditioned, not raw waypoint target
+    send("HDM_LTD", d.hgt_dem_rate_ltd); // climb/sink slew-limited local metres
+    send("HDM_ACT", d.hgt_dem);          // effective potential-energy reference
+
     send("AHRS_PITCH", fwcpp::math::degrees(b.plane().ahrs->get_pitch()));
     send("ELEVATOR", b.plane().srv_channels.get_output_scaled(fwcpp::srv::Function::kElevator) / 4500.0f);
     send("WHEEL_BRAK", b.sim().wheel_brake);
