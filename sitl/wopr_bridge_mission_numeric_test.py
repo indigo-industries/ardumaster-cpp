@@ -73,7 +73,7 @@ try:
     recv(['HEARTBEAT'])
     rows=[dict(seq=i,frame=0,command=16,param1=0.,param2=250.,param3=42.5,param4=float('nan'),x=398260990,y=-840483020+i*100000,z=4000.) for i in range(4)]
     upload(rows,0);verify(rows)
-    cases=[('x',910000000,10),('x',-910000000,10),('y',1810000000,11),('y',-1810000000,11),('z',float('nan'),12),('z',float('inf'),12),('z',-float('inf'),12),('z',1e9,12),('z',-1e9,12)]
+    cases=[('param2',float('nan'),7),('param2',float('inf'),7),('param2',-float('inf'),7),('x',910000000,10),('x',-910000000,10),('y',1810000000,11),('y',-1810000000,11),('z',float('nan'),12),('z',float('inf'),12),('z',-float('inf'),12),('z',1e9,12),('z',-1e9,12)]
     for frame in (0,3,5,6):
         for field,value,expected in cases:
             bad=[dict(r) for r in rows];bad[1]['frame']=frame;bad[1][field]=value
@@ -84,7 +84,7 @@ try:
         upload(boundary,expected);verify(boundary if expected==0 else rows)
         upload(rows,0);verify(rows)
     # Finite negative and zero heights and valid coordinate endpoints remain accepted.
-    for field,value in [('z',-100.),('z',0.),('x',900000000),('x',-900000000),('y',1800000000),('y',-1800000000)]:
+    for field,value in [('param2',0.),('param2',-1.),('param2',2.5),('param2',1e6),('param2',struct.unpack('<f',struct.pack('<I',0x7f7fffff))[0]),('z',-100.),('z',0.),('x',900000000),('x',-900000000),('y',1800000000),('y',-1800000000)]:
         valid=[dict(r) for r in rows];valid[1][field]=value
         upload(valid,0);verify(valid)
     upload(rows,0);verify(rows)

@@ -1070,6 +1070,9 @@ public:
             fwcpp::vehicle::MissionItem m;
             switch (r.command) {
             case 16: m.command = fwcpp::vehicle::MissionCommand::Waypoint;
+                     // A nonfinite radius can count a remote waypoint as reached.
+                     // Validate the consumed field; optional yaw metadata is separate.
+                     if (!std::isfinite(r.p2)) return -7; // MAV_MISSION_INVALID_PARAM2
                      m.acceptance_radius_m = std::fmax(0.0f, r.p2);
                      break;
             case 22: m.command = fwcpp::vehicle::MissionCommand::Takeoff;
