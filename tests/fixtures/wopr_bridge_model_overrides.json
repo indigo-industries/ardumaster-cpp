@@ -1,4 +1,5 @@
 {
+  "kff_rudder_mix": 0.25,
   "ground_steer_alt": 7.0,
   "pitch_rate_p": 0.2,
   "pitch_rate_i": 0.16,

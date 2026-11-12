@@ -487,6 +487,12 @@ public:
         mode_ = BridgeMode::kManual;
         now_ms_ = 0;
         initialized_ = true;
+        // Report only accepted INITs, including model-less resets. This is
+        // the consumed value, not merely a model-file echo.
+        std::printf("INIT directional tuning: kff_rudder_mix=%.9g model='%s'\n",
+                    plane_.aparm.kff_rudder_mix,
+                    p.model_json[0] != '\0' ? p.model_json : "<built-in defaults>");
+        std::fflush(stdout);
         return Status::kOk;
     }
 
@@ -578,6 +584,20 @@ public:
         fwcpp::sim::json_get_float(obj, "landing_rollout_pitch_rate", plane_.aparm.landing_rollout_pitch_rate);
         fwcpp::sim::json_get_float(obj, "landing_reverse_throttle_pct", plane_.aparm.landing_reverse_throttle_pct);
         fwcpp::sim::json_get_float(obj, "yaw2srv_damp", plane_.yaw_controller.mutable_gains().k_d);
+        // Optional aileron-to-rudder feedforward. The bridge model contract
+        // is [0,1]; omission keeps Plane's 0.5 default. INIT reconstructs
+        // Plane, so a previous model's override cannot survive re-INIT.
+        if (const auto* mix = obj.get("kff_rudder_mix")) {
+            // Validate before float conversion: values just outside [0,1]
+            // must not round into the accepted interval.
+            if (!mix->is_number() || !std::isfinite(mix->number) ||
+                mix->number < 0.0 || mix->number > 1.0) {
+                std::printf("model rejected: kff_rudder_mix must be finite in [0,1]\n");
+                std::fflush(stdout);
+                return false;
+            }
+            plane_.aparm.kff_rudder_mix = static_cast<float>(mix->number);
+        }
         // TECS holds its OWN by-value copy of the airframe params, taken at
         // construction — mirror the envelope into it or every tas demand is
         // clamped to the foamie's [9, 22] m/s forever (measured live).

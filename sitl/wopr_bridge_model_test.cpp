@@ -6,6 +6,10 @@
 
 namespace {
 struct ModelLoaderTestAccess {
+    static bool rudder_mix(Bridge& b, float expected) {
+        return b.initialized_ && b.plane_.aparm.kff_rudder_mix == expected;
+    }
+    static bool uninitialized(Bridge& b) { return !b.initialized_; }
     static bool host_true_airspeed(Bridge& b) {
         // At altitude with wind, TAS differs from both EAS and groundspeed.
         // Exercise the host packet boundary without changing controller EAS.
@@ -22,7 +26,8 @@ struct ModelLoaderTestAccess {
         return reply.airspeed_mps == 100.0f;
     }
     static bool overrides(Bridge& b) {
-        return b.plane_.aparm.loiter_radius == 4000.0f && b.plane_.aparm.rtl_radius == -4500.0f &&
+        return rudder_mix(b, .25f) &&
+               b.plane_.aparm.loiter_radius == 4000.0f && b.plane_.aparm.rtl_radius == -4500.0f &&
                b.plane_.pitch_controller.rate_pid().kP() == .2f &&
                b.plane_.pitch_controller.rate_pid().kI() == .16f &&
                b.plane_.pitch_controller.rate_pid().kD() == .01f &&
@@ -47,7 +52,8 @@ struct ModelLoaderTestAccess {
                b.plane_.tecs.mutable_gains().land_sink_rate_change == 0.125f;
     }
     static bool defaults(Bridge& b) {
-        return b.plane_.aparm.loiter_radius == 60.0f && b.plane_.aparm.rtl_radius == 0.0f &&
+        return rudder_mix(b, .5f) &&
+               b.plane_.aparm.loiter_radius == 60.0f && b.plane_.aparm.rtl_radius == 0.0f &&
                b.plane_.pitch_controller.rate_pid().kP() == .04f &&
                b.plane_.pitch_controller.rate_pid().kI() == .15f &&
                b.plane_.pitch_controller.rate_pid().kD() == 0.0f &&
@@ -104,6 +110,48 @@ int main(int argc, char** argv) {
     }
     const std::string fixture_path = argv[1];
     const std::string fixture_dir = fixture_path.substr(0, fixture_path.find_last_of("/\\") + 1);
+    // Exercise the real loader with endpoints and a fractional override,
+    // restoring both an omitted-key model and model-less defaults each time.
+    auto init_fixture = [&](const char* file) {
+        const std::string path = fixture_dir + file;
+        if (path.size() >= sizeof(p.model_json)) { return Status::kBadModel; }
+        std::strcpy(p.model_json, path.c_str());
+        return b.init(p);
+    };
+    for (const auto& entry : {std::pair{"wopr_rudder_zero.json", 0.0f},
+                              std::pair{"wopr_bridge_model_overrides.json", .25f},
+                              std::pair{"wopr_rudder_one.json", 1.0f}}) {
+        if (init_fixture(entry.first) != Status::kOk ||
+            !ModelLoaderTestAccess::rudder_mix(b, entry.second)) {
+            std::fprintf(stderr, "rudder mix did not reach consumer: %s\n", entry.first); return 1;
+        }
+        if (init_fixture("wopr_rudder_omitted.json") != Status::kOk ||
+            !ModelLoaderTestAccess::defaults(b)) {
+            std::fprintf(stderr, "omitted rudder key retained stale override\n"); return 1;
+        }
+        if (init_fixture(entry.first) != Status::kOk) { return 1; }
+        p.model_json[0] = '\0';
+        if (b.init(p) != Status::kOk || !ModelLoaderTestAccess::defaults(b)) { return 1; }
+    }
+    for (const char* file : {"wopr_rudder_negative.json", "wopr_rudder_above_one.json",
+                             "wopr_rudder_nonnumeric.json", "wopr_rudder_overflow.json",
+                             "wopr_rudder_float_overflow.json", "wopr_rudder_null.json",
+                             "wopr_rudder_bool.json", "wopr_rudder_near_above_one.json",
+                             "wopr_rudder_near_negative.json"}) {
+        if (init_fixture("wopr_bridge_model_overrides.json") != Status::kOk) { return 1; }
+        if (init_fixture(file) != Status::kBadModel || !ModelLoaderTestAccess::uninitialized(b)) {
+            std::fprintf(stderr, "invalid rudder mix accepted or bridge still initialized: %s\n", file);
+            return 1;
+        }
+        StepPayload step{};
+        if (b.step(step) != Status::kNotInitialized) {
+            std::fprintf(stderr, "STEP accepted after bad rudder model: %s\n", file); return 1;
+        }
+        if (init_fixture("wopr_rudder_omitted.json") != Status::kOk ||
+            !ModelLoaderTestAccess::defaults(b)) {
+            std::fprintf(stderr, "clean re-INIT failed after invalid rudder model: %s\n", file); return 1;
+        }
+    }
     for (const char* file : {"wopr_pitch_negative.json", "wopr_pitch_nonnumeric.json", "wopr_pitch_overflow.json", "wopr_radius_nonnumeric.json", "wopr_radius_overflow.json", "wopr_radius_range.json"}) {
         const std::string invalid = fixture_dir + file;
         if (invalid.size() >= sizeof(p.model_json)) { return 2; }

@@ -60,6 +60,15 @@ reads `land_time_const`, `land_damp`, `land_spd_weight`,
 Omitted values retain upstream defaults; nonnumeric, negative and nonfinite
 values reject the model. Re-INIT resets overrides. Startup output reports
 consumed gains, and MAVLink `HAGL` reports unrounded plant ground clearance.
+
+Optional `kff_rudder_mix` configures the aileron-to-rudder feedforward mix.
+The bridge requires a numeric, finite value in `[0,1]`, validated before float
+conversion. Omission restores the existing `0.5` default on each INIT, including
+an INIT without a model. Invalid values reject INIT and leave STEP disabled
+until a successful INIT. Successful INIT output reports the consumed mix and
+model path. This enables model-specific calibration; it does not change the
+default or select a tune for any aircraft.
+
 To verify overrides
 through the real INIT loader, re-INIT defaults, final-flare state/datum handling,
 and the production ground-dynamics pitch gates:
