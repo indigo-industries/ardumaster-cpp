@@ -19,11 +19,15 @@ inline constexpr std::size_t kHeaderLenV2 = 10;
 inline constexpr std::size_t kCrcLen = 2;
 inline constexpr std::size_t kMaxPayloadLen = 255;
 inline constexpr std::uint32_t kMsgIdHeartbeat = 0;
+inline constexpr std::uint32_t kMsgIdParamRequestRead = 20;
 inline constexpr std::uint32_t kMsgIdParamRequestList = 21;
 inline constexpr std::uint32_t kMsgIdParamValue = 22;
 inline constexpr std::uint32_t kMsgIdParamSet = 23;
 inline constexpr std::uint32_t kMsgIdAttitude = 30;
+inline constexpr std::uint32_t kMsgIdMissionSetCurrent = 41;
+inline constexpr std::uint32_t kMsgIdMissionCurrent = 42;
 inline constexpr std::uint32_t kMsgIdMissionCount = 44;
+inline constexpr std::uint32_t kMsgIdMissionClearAll = 45;
 inline constexpr std::uint32_t kMsgIdMissionRequestInt = 51;
 inline constexpr std::uint32_t kMsgIdMissionItemInt = 73;
 inline constexpr std::uint32_t kMsgIdCommandLong = 76;
@@ -41,18 +45,23 @@ inline constexpr std::uint32_t kMsgIdVfrHud = 74;
 // CRC extras from same-tree lua (libraries/AP_Scripting/modules/MAVLink)
 // where present, else pymavlink message_checksum / generated headers of
 // pinned modules/mavlink/message_definitions/v1.0/common.xml:
-// HEARTBEAT.crc_extra = 50 msgid 0; PARAM_REQUEST_LIST = 159 msgid 21;
-// PARAM_VALUE = 220 msgid 22; PARAM_SET = 168 msgid 23;
-// ATTITUDE = 39 msgid 30;
-// MISSION_COUNT = 221 msgid 44; MISSION_REQUEST_INT = 196 msgid 51;
-// MISSION_ITEM_INT = 38 msgid 73;
+// HEARTBEAT.crc_extra = 50 msgid 0; PARAM_REQUEST_READ = 214 msgid 20;
+// PARAM_REQUEST_LIST = 159 msgid 21; PARAM_VALUE = 220 msgid 22;
+// PARAM_SET = 168 msgid 23; ATTITUDE = 39 msgid 30;
+// MISSION_SET_CURRENT = 28 msgid 41; MISSION_CURRENT = 28 msgid 42;
+// MISSION_COUNT = 221 msgid 44; MISSION_CLEAR_ALL = 232 msgid 45;
+// MISSION_REQUEST_INT = 196 msgid 51; MISSION_ITEM_INT = 38 msgid 73;
 // COMMAND_LONG.crc_extra = 152 msgid 76; COMMAND_ACK.crc_extra = 143 msgid 77.
 inline constexpr std::uint8_t kHeartbeatCrcExtra = 50;
+inline constexpr std::uint8_t kParamRequestReadCrcExtra = 214;
 inline constexpr std::uint8_t kParamRequestListCrcExtra = 159;
 inline constexpr std::uint8_t kParamValueCrcExtra = 220;
 inline constexpr std::uint8_t kParamSetCrcExtra = 168;
 inline constexpr std::uint8_t kAttitudeCrcExtra = 39;
+inline constexpr std::uint8_t kMissionSetCurrentCrcExtra = 28;
+inline constexpr std::uint8_t kMissionCurrentCrcExtra = 28;
 inline constexpr std::uint8_t kMissionCountCrcExtra = 221;
+inline constexpr std::uint8_t kMissionClearAllCrcExtra = 232;
 inline constexpr std::uint8_t kMissionRequestIntCrcExtra = 196;
 inline constexpr std::uint8_t kMissionItemIntCrcExtra = 38;
 inline constexpr std::uint8_t kCommandLongCrcExtra = 152;
@@ -178,6 +187,22 @@ enum class DecodeError : std::uint8_t {
     }
     if (msgid == kMsgIdVfrHud) {
         extra = kVfrHudCrcExtra;
+        return true;
+    }
+    if (msgid == kMsgIdParamRequestRead) {
+        extra = kParamRequestReadCrcExtra;
+        return true;
+    }
+    if (msgid == kMsgIdMissionSetCurrent) {
+        extra = kMissionSetCurrentCrcExtra;
+        return true;
+    }
+    if (msgid == kMsgIdMissionCurrent) {
+        extra = kMissionCurrentCrcExtra;
+        return true;
+    }
+    if (msgid == kMsgIdMissionClearAll) {
+        extra = kMissionClearAllCrcExtra;
         return true;
     }
     return false;

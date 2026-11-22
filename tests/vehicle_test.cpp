@@ -2943,6 +2943,41 @@ TEST_CASE("Closed loop: AUTO flies its mission to completion, hands off to RTL v
     REQUIRE(final_dist_to_home < 150.0f);
 }
 
+TEST_CASE("Regression (ticket e222817d/090f7485): an explicit home at (0,0,0) survives ModeAUTO::enter(), even "
+          "though that value used to collide with the \"never called set_home()\" sentinel",
+          "[vehicle][integration][auto][home]") {
+    Plane plane;
+
+    // Mirrors sitl/wopr_bridge.cpp:454 exactly: home IS the shared fixed
+    // reference point (this port's nav origin), set explicitly and
+    // deliberately - not left at its untouched default.
+    plane.set_home(fwcpp::Location());
+    REQUIRE(plane.home.same_latlon_as(fwcpp::Location()));
+    REQUIRE(plane.home_is_set_);
+
+    // A course that starts well away from home, so entering AUTO while
+    // already displaced is exactly the collision scenario: home is
+    // legitimately (0,0,0) at the moment ModeAUTO::enter() runs, same as
+    // any mid-flight mission upload + AUTO on the real bridge.
+    std::array<MissionItem, 2> items;
+    items[0].loc = make_loc(2000.0f, 0.0f, 60.0f);
+    items[1].loc = make_loc(2000.0f, 500.0f, 60.0f);
+    REQUIRE(plane.mission.load(items));
+    plane.update_current_loc(fwcpp::math::Vector3f{2000.0f, 0.0f, -60.0f});
+    REQUIRE(plane.current_loc.get_distance(plane.home) > 1500.0f); // genuinely displaced already
+
+    REQUIRE(plane.set_mode(plane.mode_auto)); // the real entry point - runs ModeAUTO::enter() for real
+
+    // The fix under test: home must still read the explicitly-set value,
+    // not the aircraft's current (displaced) position. Before the fix,
+    // ModeAUTO::enter()'s value-sniff misfired here because (0,0,0) is
+    // byte-identical to its own "never set" sentinel, and clobbered home
+    // with current_loc - which is exactly why RTL used to loiter a few km
+    // from the arm point instead of returning to it.
+    REQUIRE(plane.home.same_latlon_as(fwcpp::Location()));
+    REQUIRE(plane.home_is_set_);
+}
+
 // ---------------------------------------------------------------------
 // CPP-031 SLICE 8: RC short (throttle) failsafe. See plane.hpp's own
 // "CPP-031 SLICE 8 ADDENDUM" file banner for the full design (throttle-

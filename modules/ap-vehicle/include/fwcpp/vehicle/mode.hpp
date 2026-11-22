@@ -244,11 +244,21 @@ inline void ModeCRUISE::navigate(const StabilizeInputs& in) {
 inline bool ModeAUTO::enter() {
     // CPP-031 slice 7 - see plane.hpp's own "HOME-BEFORE-AUTO-RTL" note:
     // a real, minimal fallback for a caller that never called
-    // plane.set_home() at all - treats "home is still exactly the
-    // untouched default Location()" as "never explicitly set", and sets
-    // it to wherever THIS mission is starting from. Does NOT override any
-    // other value a caller may have already set.
-    if (plane_.home.lat == 0 && plane_.home.lng == 0 && plane_.home.alt == 0) {
+    // plane.set_home() at all - sets it to wherever THIS mission is
+    // starting from. Does NOT override any other value a caller may have
+    // already set.
+    //
+    // Ticket e222817d/090f7485: this used to value-sniff
+    // `home == Location(0,0,0)` as the "never set" signal instead of
+    // tracking it explicitly. (0,0,0) is a byte-identical, and for this
+    // port's own wopr_bridge.cpp a genuinely INTENDED, home (the nav
+    // origin) - the sniff misfired on every AUTO (re-)entry while
+    // airborne and displaced, clobbering the real home with the current
+    // in-flight position, so RTL flew to the clobbered point instead of
+    // home. `home_is_set_` is set unconditionally by set_home() (see
+    // plane.hpp), regardless of the value passed, so it can't be fooled
+    // by a legitimate (0,0,0) home.
+    if (!plane_.home_is_set_) {
         plane_.set_home(plane_.current_loc);
     }
 

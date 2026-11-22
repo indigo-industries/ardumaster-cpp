@@ -364,6 +364,16 @@ public:
     // last-write-wins-per-field behavior on one shared struct.
     [[nodiscard]] const pid::PidInfo& get_pid_info() const { return pid_info_; }
 
+    // WOPR-BRIDGE accessor (ticket d366d3f0, same rationale as
+    // fwcpp::tecs::Tecs::mutable_gains()): gains_ is construction-time
+    // state (see the Plane() member-initializer list) with no AP_Param
+    // write path wired to it, so an embedding host configuring a
+    // non-default airframe (YAW2SRV_DAMP/_SLIP/_INT from a JSON model file)
+    // needs direct access to the live gains. No internal caller uses this;
+    // behavior is unchanged unless a host writes through it — every model
+    // keeps flying with zero yaw damping until one actually does.
+    [[nodiscard]] Gains& mutable_gains() { return gains_; }
+
 private:
     FwController base_;
     Gains gains_;

@@ -3816,6 +3816,24 @@ public:
     // has a real equivalent here: go back to the first item.
     void reset() { current_index_ = 0; }
 
+    // Clear the mission list (MISSION_CLEAR_ALL / MISSION_COUNT=0).
+    void clear() {
+        count_ = 0;
+        current_index_ = 0;
+    }
+
+    // Jump to an absolute item index (MISSION_SET_CURRENT). Returns false
+    // if index is out of range (including empty mission).
+    bool set_current(std::size_t index) {
+        if (index >= count_) {
+            return false;
+        }
+        current_index_ = index;
+        return true;
+    }
+
+    [[nodiscard]] std::size_t current_index() const { return current_index_; }
+
 private:
     std::array<MissionItem, kMaxMissionItems> items_{};
     std::size_t count_ = 0;
@@ -5023,11 +5041,26 @@ public:
     // REQUIRED at least once before ModeRTL is first entered.
     Location home;
 
+    // Ticket e222817d/090f7485: ModeAUTO::enter()'s "home was never set"
+    // fallback used to value-sniff `home == Location(0,0,0)` as its only
+    // signal for "never called set_home()". That collides with a caller
+    // (this port's own wopr_bridge.cpp) for whom (0,0,0) IS the real,
+    // deliberately-seeded home - the fallback then clobbered a legitimate
+    // origin-home with the aircraft's current mid-flight position the
+    // moment AUTO was (re-)entered airborne, and RTL flew to the clobbered
+    // point instead of home. Track "was set_home() ever called" explicitly
+    // instead of inferring it from the value, so (0,0,0) can be a genuine,
+    // intentional home.
+    bool home_is_set_ = false;
+
     // upstream: Plane::home is set via a real GPS-lock/arming subsystem
     // this port doesn't have (see file banner) - this is the explicit
     // substitute, matching this port's "explicit setup, no automatic
     // magic" pattern.
-    void set_home(const Location& loc) { home = loc; }
+    void set_home(const Location& loc) {
+        home = loc;
+        home_is_set_ = true;
+    }
 
     // =================================================================
     // CPP-031 SLICE 9 (Plane::arm()/disarm()) - see file banner addendum
@@ -6695,9 +6728,28 @@ public:
         // to BOTH the normal-AUTO and the landing target, matching upstream
         // (the clamp is unconditional, after every branch).
         const float airspeed_lower_bound = aparm.airspeed_stall > 0.0f ? aparm.airspeed_stall : aparm.airspeed_min;
+        // Ticket 54b29ebb: jumping straight to airspeed_cruise the instant
+        // NAV_TAKEOFF hands off - even while the next waypoint still demands
+        // a climb - asks for more total energy (speed AND climb) than max
+        // thrust can supply. TECS saturates, its integrator clamps against
+        // zero headroom, and the throttle/pitch loop hunts (measured on
+        // jet-transport: leave takeoff at ~75 m/s with a 140 m/s cruise
+        // target and 150->300 m still to climb, throttle 38-100% at a
+        // 5-7 s period). Keying climb-speed only on takeoff_altitude_rel_cm
+        // is a no-op after handoff (verify_takeoff already completed at
+        // that altitude). Hold ~1.3*Vs whenever AUTO still has a meaningful
+        // climb demand toward relative_target_altitude_cm(); once level,
+        // resume cruise. Vs falls back to airspeed_min when AIRSPEED_STALL
+        // is unset (models currently leave it at 0).
+        const float stall_or_min = aparm.airspeed_stall > 0.0f ? aparm.airspeed_stall : aparm.airspeed_min;
+        const float climb_airspeed = math::constrain_value(1.3f * stall_or_min, airspeed_lower_bound, aparm.airspeed_cruise);
+        constexpr std::int32_t kClimbSpeedAltMarginCm = 1000; // 10 m
+        const bool still_climbing_out =
+            relative_target_altitude_cm() > static_cast<std::int32_t>(relative_altitude_m() * 100.0f) + kClimbSpeedAltMarginCm;
         const float raw_airspeed_target = (is_land_item && landing_stage != LandingStage::Normal)
             ? 0.5f * (aparm.airspeed_cruise + aparm.airspeed_min)
-            : aparm.airspeed_cruise;
+            : still_climbing_out ? climb_airspeed
+                                  : aparm.airspeed_cruise;
         const float airspeed_target = math::constrain_value(raw_airspeed_target, airspeed_lower_bound, aparm.airspeed_max);
         const std::int32_t eas_dem_cm = static_cast<std::int32_t>(airspeed_target * 100.0f);
 

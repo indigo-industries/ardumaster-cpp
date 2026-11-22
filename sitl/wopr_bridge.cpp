@@ -67,6 +67,7 @@ using socklen_type = socklen_t;
 #include <chrono>
 
 #include <fwcpp/gcs/framing.hpp>
+#include <fwcpp/gcs/param.hpp>
 #include <fwcpp/hal_sitl/sitl_harness.hpp>
 #include <fwcpp/hal_sitl/sitl_quadplane_harness.hpp>
 #include <fwcpp/location.hpp>
@@ -98,6 +99,57 @@ inline bool json_get_string(const fwcpp::sim::JsonValue& obj, const char* key, s
     }
     dest = v->str;
     return true;
+}
+
+// Ticket 835b26e2's own recommendation (it would have caught that ticket's
+// "takeoff_rotate_speed" and ticket 59429b42's "cg" immediately, instead of
+// both silently no-op'ing through a "flight-verified" flight test): warn
+// on any top-level model-JSON key that neither SimPlane::load_coeffs()'s
+// aero schema nor apply_model()'s own bridge-level keys (below) consume, so
+// an unwired parameter can't hide behind a passing flight test again. A
+// leading '_' marks a documentation-only field (e.g. "_comment",
+// "_drag_polar") and is never flagged.
+inline void warn_on_unrecognized_model_keys(const char* path, const fwcpp::sim::JsonValue& obj) {
+    static const char* const kKnownKeys[] = {
+        // SimPlane::load_coeffs() aero schema (modules/ap-sim/.../sim_plane.hpp)
+        "s", "b", "c", "c_lift_0", "c_lift_deltae", "c_lift_a", "c_lift_q", "mcoeff",
+        "oswald", "alpha_stall", "c_drag_q", "c_drag_deltae", "c_drag_p", "c_y_0", "c_y_b",
+        "c_y_p", "c_y_r", "c_y_deltaa", "c_y_deltar", "c_l_0", "c_l_p", "c_l_b", "c_l_r",
+        "c_l_deltaa", "c_l_deltar", "c_m_0", "c_m_a", "c_m_q", "c_m_deltae", "c_n_0", "c_n_b",
+        "c_n_p", "c_n_r", "c_n_deltaa", "c_n_deltar", "deltaa_max", "deltae_max", "deltar_max",
+        "CGOffset",
+        // apply_model()'s own bridge-level keys (this file)
+        "mass", "hover_throttle", "moment_inertia", "ground_friction",
+        "airspeed_min", "airspeed_cruise", "airspeed_max", "scaling_speed",
+        "takeoff_rotate_speed", "flare_alt_m", "flare_sec",
+        "tecs_climb_max", "tecs_sink_min", "tecs_sink_max", "tecs_time_const",
+        "tecs_thr_damp", "tecs_ptch_damp", "tecs_integ_gain", "land_sink", "land_src",
+        "yaw2srv_damp", "yaw2srv_slip", "yaw2srv_int",
+        "vtol", "vtol_frame_layout", "vtol_frame_params",
+        "vtol_climb_gain", "vtol_trim_gain", "vtol_climb_max", "vtol_land_rate_mps",
+        "vtol_assist_full_mps", "vtol_assist_zero_mps", "vtol_pos_kp", "vtol_vel_kp",
+        "vtol_vel_max", "vtol_accel_max", "vtol_tilt_max_deg", "vtol_land_capture_m",
+    };
+    for (const auto& [key, value] : obj.object) {
+        (void)value;
+        if (!key.empty() && key[0] == '_') {
+            continue; // documentation field, e.g. "_comment", "_drag_polar"
+        }
+        bool known = false;
+        for (const char* k : kKnownKeys) {
+            if (key == k) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) {
+            std::fprintf(stderr,
+                         "wopr_bridge: WARNING model file %s has unrecognized key \"%s\" - it "
+                         "will be silently ignored (same failure class as tickets 59429b42 and "
+                         "835b26e2)\n",
+                         path, key.c_str());
+        }
+    }
 }
 
 // Directory of a path (both separators), WITH the trailing separator; empty
@@ -188,8 +240,8 @@ struct InitPayload {
     // Optional airframe model file (NUL-terminated path; empty = the built-in
     // skywalker_2013 defaults). One JSON carries BOTH halves of an airframe:
     // the SimPlane aero set load_coeffs() reads (upstream's own plane:*.json
-    // last_letter schema — s/b/c, c_lift_*, c_drag_*, c_m_*, ..., "cg"), plus
-    // bridge-applied extras: "mass" (kg), "hover_throttle" (full-throttle
+    // last_letter schema — s/b/c, c_lift_*, c_drag_*, c_m_*, ..., "CGOffset"),
+    // plus bridge-applied extras: "mass" (kg), "hover_throttle" (full-throttle
     // T/W = 1/hover_throttle), and the FLIGHT-CODE envelope "airspeed_min"/
     // "airspeed_cruise"/"airspeed_max"/"scaling_speed" (m/s → plane.aparm) —
     // a heavy plant with the default 12 m/s TECS target would just stall.
@@ -310,7 +362,8 @@ public:
         vtol_ = false;
         vtol_mode_ = BridgeMode::kManual;
         vtol_hover_trim_ = 0.0f;
-        vtol_transition_done_ = false;
+        vtol_guard_strength_ = 0.0f;
+        vtol_assist_frac_filt_ = 0.0f;
         vtol_climb_gain_ = 0.08f;
         vtol_trim_gain_ = 0.05f;
         vtol_climb_max_ = 2.5f;
@@ -518,6 +571,21 @@ public:
         fwcpp::sim::json_get_float(obj, "airspeed_cruise", plane_.aparm.airspeed_cruise);
         fwcpp::sim::json_get_float(obj, "airspeed_max", plane_.aparm.airspeed_max);
         fwcpp::sim::json_get_float(obj, "scaling_speed", plane_.aparm.scaling_speed);
+        // TKOFF_ROTATE_SPD (ticket 835b26e2): real ArduPlane's rotation-speed
+        // gate. Declared on every model file in this tree already, but
+        // never read here until now — every airframe rotated on bare pitch
+        // demand the instant AUTO started, regardless of whether the wing
+        // could fly (ga-light measured lifting off ~4 m/s below its own
+        // stall). Left at its 0.0f default (plane.hpp) this is a no-op, same
+        // as before.
+        fwcpp::sim::json_get_float(obj, "takeoff_rotate_speed", plane_.aparm.takeoff_rotate_speed);
+        // LAND_FLARE_ALT / LAND_FLARE_SEC (ticket 5e22fbc5): the flare
+        // trigger height/time. Defaults (plane.hpp) are foamie-scale (3 m /
+        // 2 s) and were never overridable per model, which is consistent
+        // with — though not proven the sole cause of — the ~550 m float
+        // measured on ga-light's NAV_LAND.
+        fwcpp::sim::json_get_float(obj, "flare_alt_m", plane_.aparm.flare_alt_m);
+        fwcpp::sim::json_get_float(obj, "flare_sec", plane_.aparm.flare_sec);
         // TECS holds its OWN by-value copy of the airframe params, taken at
         // construction — mirror the envelope into it or every tas demand is
         // clamped to the foamie's [9, 22] m/s forever (measured live).
@@ -539,6 +607,24 @@ public:
         fwcpp::sim::json_get_float(obj, "tecs_thr_damp", tg.thr_damp);
         fwcpp::sim::json_get_float(obj, "tecs_ptch_damp", tg.ptch_damp);
         fwcpp::sim::json_get_float(obj, "tecs_integ_gain", tg.integ_gain);
+        // LAND_SINK (ticket 5e22fbc5): the flare's target sink rate. Default
+        // 0.25 m/s is gentle enough for a foamie but produces a long float
+        // on a heavier/faster real airframe — same class of gap as the
+        // flare_alt_m/flare_sec keys above, all three go together.
+        fwcpp::sim::json_get_float(obj, "land_sink", tg.land_sink);
+        fwcpp::sim::json_get_float(obj, "land_src", tg.land_sink_rate_change);
+        // YAW2SRV_DAMP/_SLIP/_INT (ticket d366d3f0): yaw-rate damping and
+        // sideslip coordination. YawController is constructed with an
+        // all-zero Gains{} (yaw_controller.hpp) and, until now, nothing in
+        // this loader could ever change that — every model flew with zero
+        // yaw damping, which is exactly why turn REVERSALS (not steady
+        // turns — those are driven fine by the always-active k_ff
+        // feedforward) lag then overshoot 1.5-2x. yaw2srv_damp is already
+        // declared (0.5) in ga-light/jet-transport/c130's model files.
+        fwcpp::fw_control::YawController::Gains& yg = plane_.yaw_controller.mutable_gains();
+        fwcpp::sim::json_get_float(obj, "yaw2srv_damp", yg.k_d);
+        fwcpp::sim::json_get_float(obj, "yaw2srv_slip", yg.k_a);
+        fwcpp::sim::json_get_float(obj, "yaw2srv_int", yg.k_i);
         // VTOL law tuning (vtol models only; harmless no-ops otherwise).
         fwcpp::sim::json_get_float(obj, "vtol_climb_gain", vtol_climb_gain_);
         fwcpp::sim::json_get_float(obj, "vtol_trim_gain", vtol_trim_gain_);
@@ -555,6 +641,7 @@ public:
             vtol_tilt_max_rad_ = fwcpp::math::radians(tilt_deg);
         }
         fwcpp::sim::json_get_float(obj, "vtol_land_capture_m", vtol_land_capture_m_);
+        warn_on_unrecognized_model_keys(path, obj);
         return true;
     }
 
@@ -633,20 +720,41 @@ public:
                 // pitch floor chasing its walking speed demand from 18 all
                 // the way into the ground, though the wing flies level there.
                 //
-                // ONE-WAY LATCH: without it the guard re-engages every time
-                // cruise-speed noise dips below the threshold — throttle
-                // floor slams on, speed surges, floor releases, dip... a
-                // limit cycle the operator sees as wobbly forward flight.
-                // Once cruise is first reached, the transition is DONE until
-                // the aircraft re-enters a vertical mode.
+                // FADE, NOT A ONE-WAY LATCH (ticket babe6c13): an
+                // instantaneous drop of set_pitch_min()/set_throttle_min()
+                // the first tick cruise speed is touched handed an
+                // unclamped TECS an aircraft that had JUST reached its speed
+                // demand — TECS then traded the altitude the guard was
+                // protecting for the speed it still wanted (measured: pitch
+                // dives to -12.84 deg, 26.85 m lost). vtol_guard_strength_
+                // decays 1 -> 0 over kVtolGuardFadeSec once cruise+margin is first
+                // reached instead of snapping, so the floors relax smoothly.
+                // Release also requires kVtolGuardReleaseMarginMps above
+                // bare airspeed_cruise (hysteresis) so a sample that merely
+                // grazes the demand cannot start the fade.
+                // Still a one-way fade per transition (re-arms to 1.0 only
+                // on re-entering a vertical mode) — the same anti-limit-
+                // cycle reasoning as the old latch still applies, it's just
+                // no longer an instant step.
+                constexpr float kVtolGuardFadeSec = 1.5f;
+                constexpr float kVtolGuardTickSec = 0.02f; // outer 50 Hz tick
+                // Hysteresis above bare cruise (ticket babe6c13): do not start
+                // fading the TECS floors the instant airspeed grazes the demand.
+                constexpr float kVtolGuardReleaseMarginMps = 1.0f;
                 if (vtol_mode_ == BridgeMode::kQhover || vtol_mode_ == BridgeMode::kQland) {
-                    vtol_transition_done_ = false;
-                } else if (qsim_.airspeed >= plane_.aparm.airspeed_cruise) {
-                    vtol_transition_done_ = true;
+                    vtol_guard_strength_ = 1.0f;
+                } else if (qsim_.airspeed >= plane_.aparm.airspeed_cruise + kVtolGuardReleaseMarginMps) {
+                    // fwcpp::math::constrain_value, not std::max/min: this
+                    // file only #undefs ABSOLUTE/RELATIVE against
+                    // windows.h's macros (see the top-of-file #undef block),
+                    // and windows.h also #defines max/min — std::max(...)
+                    // would macro-expand into a syntax error.
+                    vtol_guard_strength_ = fwcpp::math::constrain_value(
+                        vtol_guard_strength_ - kVtolGuardTickSec / kVtolGuardFadeSec, 0.0f, 1.0f);
                 }
                 const bool transitioning = vtol_mode_ != BridgeMode::kQhover &&
                                            vtol_mode_ != BridgeMode::kQland &&
-                                           !vtol_transition_done_;
+                                           vtol_guard_strength_ > 0.0f;
                 // Position cascade runs once per host tick (50 Hz) — the
                 // attitude demand it produces holds for the 8 sub-steps.
                 float vtol_roll_dem = 0.0f, vtol_pitch_dem = 0.0f;
@@ -663,7 +771,11 @@ public:
                     // ground (measured twice). External limits reset every
                     // TECS iteration, so re-assert per sub-step.
                     if (transitioning) {
-                        plane_.tecs.set_pitch_min(-2.0f);
+                        // Scaled by vtol_guard_strength_ (see above) instead
+                        // of applied at a fixed value: as the fade runs out,
+                        // both floors relax toward "no floor" continuously
+                        // rather than dropping in one tick.
+                        plane_.tecs.set_pitch_min(-2.0f * vtol_guard_strength_);
                         // Break the underspeed deadlock: TECS's underspeed
                         // state pins the speed demand to airspeed_min and
                         // flies speed with pitch, so the aircraft equilibrates
@@ -672,7 +784,7 @@ public:
                         // A high throttle floor pushes airspeed through the
                         // exit threshold; past cruise the guard drops and
                         // TECS manages normally.
-                        plane_.tecs.set_throttle_min(0.8f);
+                        plane_.tecs.set_throttle_min(0.8f * vtol_guard_strength_);
                     }
                     last_vtol_lift_ = vtol_collective();
                     qharness_.step(sub_now, 0.0025f, last_vtol_lift_, plane_.armed,
@@ -936,8 +1048,9 @@ public:
 
     // Load an uploaded geodetic mission: same NED-from-start conversion the
     // WOPR wire path uses, but via the sim's real home Location so a GCS and
-    // the WOPR host agree on where every waypoint is. Rows the port can't fly
-    // (DO_*, CONDITION_*, loiters) are skipped; seq 0 NAV_WAYPOINT = home row.
+    // the WOPR host agree on where every waypoint is. Supported cmds:
+    // NAV_WAYPOINT(16)/NAV_TAKEOFF(22)/NAV_LAND(21); seq 0 NAV_WAYPOINT = home
+    // row (skipped). Unsupported rows fail the load (-1).
     // Returns the number of flyable items loaded, or -1 on failure.
     int gcs_mission_load(const GcsGeoItem* rows, std::size_t n) {
         if (!initialized_) {
@@ -962,7 +1075,9 @@ public:
                      break;
             case 21: m.command = fwcpp::vehicle::MissionCommand::Land; break;
             default:
-                continue; // unsupported row — skipped, not fatal
+                // Defense in depth: MAVLink upload should already have rejected
+                // these with MAV_MISSION_UNSUPPORTED. Refuse to silently drop.
+                return -1;
             }
             fwcpp::Location wp;
             wp.lat = r.lat_1e7;
@@ -987,6 +1102,28 @@ public:
         }
         observe_mission_base();
         return static_cast<int>(count);
+    }
+
+    // MISSION_CLEAR_ALL / MISSION_COUNT=0: drop the in-plane mission safely.
+    void gcs_mission_clear() {
+        if (!initialized_) {
+            return;
+        }
+        plane_.mission.clear();
+        mission_base_ = nullptr;
+        mission_base_size_ = 0;
+        vtol_land_index_ = -1;
+    }
+
+    // MISSION_SET_CURRENT: jump plane mission index if in range.
+    bool gcs_mission_set_current(std::uint16_t index) {
+        if (!initialized_) {
+            return false;
+        }
+        if (!plane_.mission.set_current(static_cast<std::size_t>(index))) {
+            return false;
+        }
+        return true;
     }
 
     void fill_state(StateReply& r) const {
@@ -1109,6 +1246,15 @@ private:
         const float fwd = std::cos(y) * an + std::sin(y) * ae;
         const float rgt = -std::sin(y) * an + std::cos(y) * ae;
         constexpr float kG = 9.80665f;
+        // NOTE (ticket 00e48780): this clamps the DEMAND handed to the
+        // harness's own attitude controller, not the aircraft's achieved
+        // attitude — qharness_.step() is free to track that demand
+        // imperfectly, and during the back-transition oscillation this
+        // bridge measured achieved pitch up to +29.52 deg against this
+        // exact +-20.1 deg (0.35 rad) clamp. Don't read vtol_tilt_max_rad_
+        // as a guarantee on airframe attitude; the assist-blend low-pass
+        // above (vtol_collective()) is what actually bounds the oscillation
+        // that was blowing past this clamp, not a tighter clamp here.
         pitch_dem_rad = fwcpp::math::constrain_value(-std::atan(fwd / kG), -vtol_tilt_max_rad_, vtol_tilt_max_rad_);
         roll_dem_rad = fwcpp::math::constrain_value(std::atan(rgt / kG), -vtol_tilt_max_rad_, vtol_tilt_max_rad_);
     }
@@ -1127,6 +1273,11 @@ private:
         const float climb_rate = -qsim_.velocity_ef.z;
         constexpr float kSubDt = 0.0025f;
         if (vtol_mode_ == BridgeMode::kQhover || vtol_mode_ == BridgeMode::kQland) {
+            // Keep the forward-transition assist filter (below) primed at
+            // full assist while vertical, so the instant the mode leaves
+            // qhover/qland the blend starts from "still fully hover-borne"
+            // instead of ramping up from whatever it last decayed to.
+            vtol_assist_frac_filt_ = 1.0f;
             float climb_dem;
             if (vtol_mode_ == BridgeMode::kQhover) {
                 const float stick = fwcpp::math::constrain_value(
@@ -1171,29 +1322,20 @@ private:
         // flight is genuinely wingborne. (History on the demo frame: cutting
         // at 14 descended it into the ground mid-acceleration; reaching to 20
         // left it permanently half-assisted at the foamie's 12 m/s cruise.)
-        return (hover + vtol_hover_trim_) *
-               fwcpp::math::constrain_value(
-                   (vtol_assist_zero_ - qsim_.airspeed) / (vtol_assist_zero_ - vtol_assist_full_),
-                   0.0f, 1.0f);
-    }
-
-    // Mission::current() returns a pointer into its private fixed array but
-    // exposes no index; recover progress via pointer arithmetic against the
-    // first item (stable across the mission's lifetime — fixed-size array,
-    // no reallocation, ADR-0012).
-    [[nodiscard]] std::uint16_t mission_progress_index() const {
-        const fwcpp::vehicle::MissionItem* cur = plane_.mission.current();
-        if (cur == nullptr || plane_.mission.empty()) {
-            return 0;
-        }
-        // reset()+current() would perturb state; instead exploit that
-        // current() points into the same array for index 0..size-1. We can
-        // recover the base by noting current() at index 0 after load() —
-        // cached below on first use.
-        if (mission_base_ == nullptr || plane_.mission.size() != mission_base_size_) {
-            return 0; // no base cached (observe_mission_base not called yet)
-        }
-        return static_cast<std::uint16_t>(cur - mission_base_);
+        const float raw_assist_frac = fwcpp::math::constrain_value(
+            (vtol_assist_zero_ - qsim_.airspeed) / (vtol_assist_zero_ - vtol_assist_full_), 0.0f,
+            1.0f);
+        // LOW-PASSED, not applied instantaneously (ticket 00e48780): a bare
+        // linear ramp on airspeed closes a loop with no damping anywhere in
+        // it — lift changes pitch demand, pitch demand changes airspeed,
+        // airspeed changes the ramp fraction, gain is as high at the band
+        // edges as in the middle. Measured: 38.8 deg p-p pitch, 20.2 deg
+        // roll in back-transition, continuing into QLAND. kAssistFracTauSec
+        // sits well inside the ~1 s period the trace measured.
+        constexpr float kAssistFracTauSec = 0.5f;
+        const float alpha = kSubDt / (kAssistFracTauSec + kSubDt);
+        vtol_assist_frac_filt_ += alpha * (raw_assist_frac - vtol_assist_frac_filt_);
+        return (hover + vtol_hover_trim_) * vtol_assist_frac_filt_;
     }
 
 public:
@@ -1202,6 +1344,23 @@ public:
     void observe_mission_base() {
         mission_base_ = plane_.mission.current();
         mission_base_size_ = plane_.mission.size();
+    }
+
+    // Mission::current() returns a pointer into its private fixed array but
+    // exposes no index; recover progress via pointer arithmetic against the
+    // first item (stable across the mission's lifetime - fixed-size array,
+    // no reallocation, ADR-0012). Public for GCS MISSION_CURRENT streaming.
+    [[nodiscard]] std::uint16_t mission_progress_index() const {
+        const fwcpp::vehicle::MissionItem* cur = plane_.mission.current();
+        if (cur == nullptr || plane_.mission.empty()) {
+            return 0;
+        }
+        // Prefer pointer arithmetic against the load-time base; fall back to
+        // Mission::current_index() when the base is not yet observed.
+        if (mission_base_ != nullptr && plane_.mission.size() == mission_base_size_) {
+            return static_cast<std::uint16_t>(cur - mission_base_);
+        }
+        return static_cast<std::uint16_t>(plane_.mission.current_index());
     }
 
 private:
@@ -1218,7 +1377,19 @@ private:
     BridgeMode vtol_mode_ = BridgeMode::kManual; // kQhover/kQland when vertical
     float vtol_hover_trim_ = 0.0f; // integral trim around the frame's hover command
     float last_vtol_lift_ = 0.0f;  // collective applied on the most recent sub-step
-    bool vtol_transition_done_ = false; // one-way latch: cruise reached since last vertical mode
+    // Forward-transition guard fade (ticket babe6c13): 1.0 while guarding,
+    // decays to 0.0 over kVtolGuardFadeSec once cruise+margin is reached;
+    // re-arms to 1.0 on re-entering a vertical mode. Replaces the old
+    // one-way boolean latch, which snapped the TECS floors off in one tick.
+    float vtol_guard_strength_ = 0.0f;
+    // Low-passed forward-transition assist blend fraction (ticket
+    // 00e48780): vtol_collective() filters the raw linear-ramp fraction
+    // through this instead of applying it instantaneously, breaking the
+    // lift->pitch->airspeed->fraction feedback loop that otherwise rings
+    // inside the assist band. Kept primed at 1.0 while in a vertical mode
+    // (see vtol_collective()) so the filter starts from the correct
+    // "still fully hover-borne" value the instant a transition begins.
+    float vtol_assist_frac_filt_ = 0.0f;
     // Host-fed real terrain under the aircraft (absolute HAE m). false until
     // the first STEP tail arrives; the flat start-fix ground applies until then.
     float terrain_hae_m_ = 0.0f;
@@ -1259,7 +1430,7 @@ private:
 // A second, optional UDP socket a real ground station (QGroundControl /
 // Mission Planner / pymavlink) connects to. Outbound: HEARTBEAT (1 Hz wall),
 // ATTITUDE + GLOBAL_POSITION_INT + VFR_HUD (~10 Hz wall while the host steps
-// the sim). Inbound: COMMAND_LONG (arm/disarm 400, DO_SET_MODE 176, RTL 20,
+// the sim), MISSION_CURRENT on item change and ~1 Hz while AUTO. Inbound: COMMAND_LONG (arm/disarm 400 w/ in-flight force-magic guard, DO_SET_MODE 176, RTL 20,
 // TAKEOFF 22), PARAM_REQUEST_LIST/SET (minimal), and the full mission-upload
 // handshake (MISSION_COUNT -> MISSION_REQUEST_INT xN -> MISSION_ACK) plus
 // download of the last uploaded set. Wall-clock time paces ONLY this GCS
@@ -1285,6 +1456,7 @@ struct GcsLink {
     std::uint8_t seq = 0;
     std::chrono::steady_clock::time_point last_hb{};
     std::chrono::steady_clock::time_point last_stream{};
+    std::chrono::steady_clock::time_point last_mission_current{};
     // Upload session state + the last accepted geodetic mission (served back
     // verbatim when the GCS re-downloads after an upload).
     bool up_active = false;
@@ -1293,6 +1465,10 @@ struct GcsLink {
     std::array<Bridge::GcsGeoItem, kMaxUploadRows> rows{};
     std::array<Bridge::GcsGeoItem, kMaxUploadRows> cached_rows{};
     std::uint16_t cached_count = 0;
+    // Active mission item seq as reported to GCS (MISSION_CURRENT).
+    std::uint16_t current_seq = 0;
+    // In-memory PARAM_SET overrides + defaults (SYSID_THISMAV seeded on open).
+    fwcpp::gcs::ParamStore params{};
 };
 
 inline void send_frame(GcsLink& g, std::uint32_t msgid, const std::uint8_t* payload, std::size_t len) {
@@ -1417,6 +1593,84 @@ inline void send_mission_ack(GcsLink& g, std::uint8_t type) {
     send_frame(g, fwcpp::gcs::kMsgIdMissionAck, p, sizeof(p));
 }
 
+inline void send_mission_current(GcsLink& g, std::uint16_t seq, std::uint16_t total) {
+    // common.xml MISSION_CURRENT: seq, total, mission_state, mission_mode.
+    std::uint8_t p[6] = {};
+    fwcpp::gcs::write_u16_le(p, seq);
+    fwcpp::gcs::write_u16_le(p + 2, total);
+    p[4] = 0; // MISSION_STATE_UNKNOWN
+    p[5] = 0; // mission_mode unknown
+    send_frame(g, fwcpp::gcs::kMsgIdMissionCurrent, p, sizeof(p));
+}
+
+// Map plane mission index (home row skipped at load) onto GCS seq (home at 0
+// when the cached upload included a seq0 NAV_WAYPOINT). Matches the inverse
+// of MISSION_SET_CURRENT handling below.
+inline std::uint16_t gcs_seq_from_plane_index(const GcsLink& g, std::uint16_t plane_idx) {
+    if (g.cached_count > 0 && g.cached_rows[0].command == 16 && g.cached_rows[0].seq == 0) {
+        return static_cast<std::uint16_t>(plane_idx + 1);
+    }
+    return plane_idx;
+}
+
+// Ticket 016621bc: emit MISSION_CURRENT on active-item change and ~1 Hz while
+// AUTO (ArduPlane SRx_EXT_STAT-style). Syncs g.current_seq from the plane.
+inline void maybe_send_mission_current(GcsLink& g, const Bridge& bridge, bool periodic) {
+    if (!g.enabled || !bridge.is_initialized() || g.cached_count == 0) {
+        return;
+    }
+    std::uint16_t seq = gcs_seq_from_plane_index(g, bridge.mission_progress_index());
+    if (seq >= g.cached_count) {
+        seq = static_cast<std::uint16_t>(g.cached_count - 1);
+    }
+    const bool changed = (seq != g.current_seq);
+    g.current_seq = seq;
+    const bool in_auto = bridge.current_mode() == BridgeMode::kAuto;
+    if (changed || (periodic && in_auto)) {
+        send_mission_current(g, g.current_seq, g.cached_count);
+    }
+}
+
+
+// Clear GCS cached mission + plane mission (when initialized).
+inline void clear_mission_state(GcsLink& g, Bridge& bridge) {
+    g.up_active = false;
+    g.up_count = 0;
+    g.up_next = 0;
+    g.cached_count = 0;
+    g.current_seq = 0;
+    bridge.gcs_mission_clear();
+}
+
+inline void ensure_default_params(GcsLink& g) {
+    if (g.params.count > 0) {
+        return;
+    }
+    (void)fwcpp::gcs::param_store_insert(g.params, "SYSID_THISMAV",
+                                         static_cast<float>(g.sysid),
+                                         fwcpp::gcs::kMavParamTypeReal32);
+}
+
+inline void emit_all_params(GcsLink& g) {
+    ensure_default_params(g);
+    const std::uint16_t n = g.params.count;
+    for (std::uint16_t i = 0; i < n; ++i) {
+        const auto& e = g.params.entries[i];
+        send_param_value(g, e.name, e.value, n, i);
+    }
+}
+
+inline bool upsert_param(GcsLink& g, const char* name, float value) {
+    ensure_default_params(g);
+    fwcpp::gcs::ParamEntry* vp = fwcpp::gcs::param_store_find(g.params, name);
+    if (vp != nullptr) {
+        vp->value = value;
+        return true;
+    }
+    return fwcpp::gcs::param_store_insert(g.params, name, value,
+                                          fwcpp::gcs::kMavParamTypeReal32);
+}
+
 inline void send_mission_count(GcsLink& g, std::uint16_t count) {
     std::uint8_t p[5] = {};
     fwcpp::gcs::write_u16_le(p, count);
@@ -1463,16 +1717,58 @@ inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f)
         break; // peer already learned from the datagram source
 
     case kMsgIdParamRequestList:
-        // Minimal parameter surface: enough for a GCS to complete its sync.
-        send_param_value(g, "SYSID_THISMAV", static_cast<float>(g.sysid), 1, 0);
+        emit_all_params(g);
         break;
 
+    case kMsgIdParamRequestRead: {
+        // Wire (size-sorted): param_index int16, target_system, target_component,
+        // param_id[16]. Reply PARAM_VALUE when known; silence when unknown
+        // (ArduPilot-like for missing names).
+        ensure_default_params(g);
+        const std::int16_t idx = static_cast<std::int16_t>(read_u16_le(p));
+        char name[17] = {};
+        std::memcpy(name, p + 4, 16);
+        name[16] = '\0';
+        const fwcpp::gcs::ParamEntry* e = nullptr;
+        std::uint16_t out_index = 0;
+        if (idx >= 0) {
+            if (static_cast<std::uint16_t>(idx) < g.params.count) {
+                e = &g.params.entries[static_cast<std::uint16_t>(idx)];
+                out_index = static_cast<std::uint16_t>(idx);
+            }
+        } else {
+            e = fwcpp::gcs::param_store_find(g.params, name);
+            if (e != nullptr) {
+                out_index = static_cast<std::uint16_t>(e - g.params.entries);
+            }
+        }
+        if (e != nullptr) {
+            send_param_value(g, e->name, e->value, g.params.count, out_index);
+        }
+        break;
+    }
+
     case kMsgIdParamSet: {
-        // Accept-and-echo: no AP_Param storage is wired in this port, so a
-        // set is acknowledged (echoed back) but not persisted anywhere.
+        // Persist into ParamStore (defaults + overrides), then echo PARAM_VALUE.
         char name[17] = {};
         std::memcpy(name, p + 6, 16);
-        send_param_value(g, name, read_f32_le(p), 1, 0);
+        name[16] = '\0';
+        // Trim at first embedded NUL already handled; strip trailing spaces.
+        for (int i = 15; i >= 0 && (name[i] == '\0' || name[i] == ' '); --i) {
+            name[i] = '\0';
+        }
+        const float value = read_f32_le(p);
+        if (!std::isfinite(value) || name[0] == '\0') {
+            break;
+        }
+        (void)upsert_param(g, name, value);
+        const fwcpp::gcs::ParamEntry* e = fwcpp::gcs::param_store_find(g.params, name);
+        const std::uint16_t n = g.params.count;
+        if (e != nullptr) {
+            send_param_value(g, e->name, e->value, n, fwcpp::gcs::kParamIndexSetAck);
+        } else {
+            send_param_value(g, name, value, n, fwcpp::gcs::kParamIndexSetAck);
+        }
         break;
     }
 
@@ -1485,10 +1781,23 @@ inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f)
         const float p1 = read_f32_le(p);
         const float p2 = read_f32_le(p + 4);
         switch (command) {
-        case 400: // MAV_CMD_COMPONENT_ARM_DISARM
-            bridge.gcs_arm(p1 > 0.5f);
+        case 400: { // MAV_CMD_COMPONENT_ARM_DISARM
+            // Ticket 6c9065a8: match ArduPlane AP_Arming_Plane::disarm() —
+            // refuse a plain disarm while airborne unless param2 is the
+            // force-magic 21196. Stock Mission Planner Disarm sends the
+            // plain form; accepting it mid-air kills the motor with an
+            // ACCEPTED ack. Force form stays available for emergencies.
+            const bool want_arm = p1 > 0.5f;
+            constexpr float kForceMagic = 21196.0f;
+            const bool force = (p2 > (kForceMagic - 0.5f)) && (p2 < (kForceMagic + 0.5f));
+            if (!want_arm && !bridge.sim().on_ground() && !force) {
+                send_command_ack(g, command, 4); // MAV_RESULT_FAILED
+                break;
+            }
+            bridge.gcs_arm(want_arm);
             send_command_ack(g, command, 0);
             break;
+        }
         case 176: // MAV_CMD_DO_SET_MODE (param2 = custom mode)
             send_command_ack(g, command,
                 bridge.gcs_set_mode_custom(static_cast<std::uint32_t>(p2)) ? 0 : 4);
@@ -1511,8 +1820,16 @@ inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f)
             break; // target_system mismatch on a shared link
         }
         const std::uint16_t count = read_u16_le(p);
-        if (count == 0 || count > kMaxUploadRows) {
-            send_mission_ack(g, count == 0 ? 0 : 1 /*MAV_MISSION_ERROR*/);
+        if (count == 0) {
+            // Honest clear: same as MISSION_CLEAR_ALL (do not ACK without clearing).
+            clear_mission_state(g, bridge);
+            send_mission_ack(g, 0); // MAV_MISSION_ACCEPTED
+            std::printf("mavlink: mission cleared (MISSION_COUNT=0)\n");
+            std::fflush(stdout);
+            break;
+        }
+        if (count > kMaxUploadRows) {
+            send_mission_ack(g, 1 /*MAV_MISSION_ERROR*/);
             g.up_active = false;
             break;
         }
@@ -1541,6 +1858,21 @@ inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f)
         r.lat_1e7 = read_i32_le(p + 16);
         r.lng_1e7 = read_i32_le(p + 20);
         r.z = read_f32_le(p + 24);
+        // Ticket 5d180916: only NAV_WAYPOINT(16)/NAV_TAKEOFF(22)/NAV_LAND(21)
+        // are accepted on MAVLink upload (seq0 NAV_WAYPOINT home row allowed).
+        // Reject unsupported cmds immediately so GCS sees MAV_MISSION_UNSUPPORTED
+        // and the bad plan is never cached.
+        const bool home_row = (seq == 0 && r.command == 16);
+        const bool supported_cmd =
+            home_row || r.command == 16 || r.command == 22 || r.command == 21;
+        if (!supported_cmd) {
+            g.up_active = false;
+            send_mission_ack(g, 3); // MAV_MISSION_UNSUPPORTED
+            std::printf("mavlink: mission upload rejected unsupported cmd %u at seq %u\n",
+                        static_cast<unsigned>(r.command), static_cast<unsigned>(seq));
+            std::fflush(stdout);
+            break;
+        }
         ++g.up_next;
         if (g.up_next < g.up_count) {
             send_mission_request_int(g, g.up_next);
@@ -1552,13 +1884,52 @@ inline void handle_frame(GcsLink& g, Bridge& bridge, const fwcpp::gcs::Frame& f)
         if (loaded > 0) {
             g.cached_rows = g.rows;
             g.cached_count = g.up_count;
+            g.current_seq = gcs_seq_from_plane_index(g, bridge.mission_progress_index());
             send_mission_ack(g, 0); // MAV_MISSION_ACCEPTED
+            send_mission_current(g, g.current_seq, g.cached_count);
             std::printf("mavlink: mission upload accepted (%u rows, %d flyable)\n",
                         static_cast<unsigned>(g.up_count), loaded);
         } else {
-            send_mission_ack(g, 4); // MAV_MISSION_UNSUPPORTED
+            send_mission_ack(g, 4); // MAV_MISSION_NO_SPACE (or load failed)
         }
         std::fflush(stdout);
+        break;
+    }
+
+    case kMsgIdMissionClearAll: {
+        if (p[0] != 0 && p[0] != g.sysid) {
+            break;
+        }
+        clear_mission_state(g, bridge);
+        send_mission_ack(g, 0);
+        std::printf("mavlink: mission cleared (MISSION_CLEAR_ALL)\n");
+        std::fflush(stdout);
+        break;
+    }
+
+    case kMsgIdMissionSetCurrent: {
+        // Wire (size-sorted): seq uint16, target_system, target_component.
+        if (p[2] != 0 && p[2] != g.sysid) {
+            break;
+        }
+        const std::uint16_t seq = read_u16_le(p);
+        // Prefer plane mission index when initialized; else accept within cache.
+        bool ok = false;
+        if (bridge.is_initialized()) {
+            // Map GCS seq (includes home row at 0 when present) onto plane index.
+            std::uint16_t plane_idx = seq;
+            if (g.cached_count > 0 && g.cached_rows[0].command == 16 &&
+                g.cached_rows[0].seq == 0 && seq > 0) {
+                plane_idx = static_cast<std::uint16_t>(seq - 1);
+            }
+            ok = bridge.gcs_mission_set_current(plane_idx);
+        } else if (seq < g.cached_count) {
+            ok = true;
+        }
+        if (ok) {
+            g.current_seq = seq;
+            send_mission_current(g, g.current_seq, g.cached_count);
+        }
         break;
     }
 
@@ -1720,7 +2091,10 @@ int main(int argc, char** argv) {
         if (gcs.enabled && bridge.is_initialized() &&
             now_wall - gcs.last_hb >= std::chrono::seconds(1)) {
             gcs.last_hb = now_wall;
+            gcs.last_mission_current = now_wall;
             mavgcs::send_heartbeat(gcs, bridge);
+            // SRx_EXT_STAT-style ~1 Hz MISSION_CURRENT while AUTO (016621bc).
+            mavgcs::maybe_send_mission_current(gcs, bridge, /*periodic=*/true);
         }
 
         if (ready <= 0) {
@@ -1861,6 +2235,8 @@ int main(int argc, char** argv) {
             mavgcs::send_attitude(gcs, bridge);
             mavgcs::send_global_position_int(gcs, bridge);
             mavgcs::send_vfr_hud(gcs, bridge);
+            // Emit immediately when the active item advances (016621bc).
+            mavgcs::maybe_send_mission_current(gcs, bridge, /*periodic=*/false);
         }
     }
 }
