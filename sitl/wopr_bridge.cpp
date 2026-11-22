@@ -539,6 +539,17 @@ public:
         fwcpp::sim::json_get_float(obj, "tecs_thr_damp", tg.thr_damp);
         fwcpp::sim::json_get_float(obj, "tecs_ptch_damp", tg.ptch_damp);
         fwcpp::sim::json_get_float(obj, "tecs_integ_gain", tg.integ_gain);
+        // PTCH_RATE_P (ticket f60884e5): C-130 model files set pitch_rate_p
+        // to 0.5, replacing the inherited AP_PitchController default of 0.04.
+        // The September 2026 wopr_bridge.exe never consumed this key, so AUTO
+        // pitch after airborne entry oscillated (~13 deg peak-to-peak at DCA).
+        // Apply to the live AC_PID (constructed from Gains at Plane()), not
+        // a stale Gains copy.
+        float pitch_rate_p = 0.0f;
+        if (fwcpp::sim::json_get_float(obj, "pitch_rate_p", pitch_rate_p) && pitch_rate_p > 0.0f) {
+            plane_.pitch_controller.rate_pid().set_kP(pitch_rate_p);
+            std::fprintf(stderr, "wopr_bridge: applied pitch_rate_p=%.4f from %s\n", pitch_rate_p, path);
+        }
         // VTOL law tuning (vtol models only; harmless no-ops otherwise).
         fwcpp::sim::json_get_float(obj, "vtol_climb_gain", vtol_climb_gain_);
         fwcpp::sim::json_get_float(obj, "vtol_trim_gain", vtol_trim_gain_);

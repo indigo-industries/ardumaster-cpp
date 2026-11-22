@@ -583,7 +583,12 @@ public:
 
         const std::uint64_t now = in.now_us;
         float dt = static_cast<float>(now - update_50hz_last_us_) * 1.0e-6f;
-        flags_.reset = dt > 1.0f;
+        // Also reset when this is the first 50 Hz call (last_us == 0).
+        // Host clocks often start near 0, so the first dt is ~0.02 s and
+        // the dt > 1.0 f test would skip the height-filter seed (ticket
+        // f60884e5). Same first-call guard as update_pitch_throttle()
+        // below.
+        flags_.reset = (update_50hz_last_us_ == 0) || dt > 1.0f;
         if (flags_.reset) {
             climb_rate_ = 0.0f;
             height_filter_.dd_height = 0.0f;
