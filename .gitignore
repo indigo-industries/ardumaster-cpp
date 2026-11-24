@@ -4,3 +4,6 @@
 *.obj
 CMakeCache.txt
 CMakeFiles/
+
+# Per-ticket offline validation scratch scripts
+/sitl/_*.py
